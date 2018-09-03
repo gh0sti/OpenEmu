@@ -26,9 +26,10 @@
 
 #import "OESearchFieldCell.h"
 #import "OEControl.h"
+#import "OETheme.h"
+#import "OEThemeImage.h"
+#import "OEThemeTextAttributes.h"
 
-@interface OESearchFieldFieldEditor : NSTextView
-@end
 
 @interface OESearchFieldCell ()
 {
@@ -36,21 +37,11 @@
 }
 - (void)updatePlaceholder;
 - (NSDictionary*)_textAttributes; // Apple Private Override
-@property OESearchFieldFieldEditor *fieldEditor;
 @property (nonatomic)  BOOL isEditing;
 @property OEThemeState lastState;
 @end
 
 @implementation OESearchFieldCell
-- (id)initImageCell:(NSImage *)image
-{
-    self = [super initImageCell:image];
-    if(self)
-    {
-        [self OE_commonInit];
-    }
-    return self;
-}
 
 - (id)initTextCell:(NSString *)aString
 {
@@ -79,10 +70,6 @@
 
     [self setIsEditing:NO];
 
-    OESearchFieldFieldEditor *fieldEditor =[[OESearchFieldFieldEditor alloc] initWithFrame:NSMakeRect(0, 0, 0, 14)];
-    [fieldEditor setFieldEditor:YES];
-    [self setFieldEditor:fieldEditor];
-
     _lastState = [self OE_currentState];
 }
 
@@ -103,7 +90,10 @@
 
     // Right gap (cancel image)
     rect.size.width -= 23.0;
-    rect.size.height = 21.0;
+    
+    // Limit the text to the cell's bounds
+    rect.size.height = 14.0;
+    rect.origin.y += 3.0;
 
     return rect;
 }
@@ -167,27 +157,25 @@
     }
 }
 
-- (NSTextView *)fieldEditorForView:(NSView *)aControlView
-{
-    return [self fieldEditor];
-}
-
 - (NSText*)setUpFieldEditorAttributes:(NSText *)textObj
 {
-    if(_themed)
+    if (_themed)
     {
         NSTextView *fieldEditor = (NSTextView*)textObj;
 
         [fieldEditor setDrawsBackground:NO];
 
         OEThemeState currentState = [self OE_currentState] | OEThemeInputStateFocused;
-        NSDictionary *typingAttribtues = [[self themeTextAttributes] textAttributesForState:currentState];
-        [fieldEditor setTypingAttributes:typingAttribtues];
 
         NSDictionary *selectionAttributes = [[self selectedThemeTextAttributes] textAttributesForState:currentState];
         [fieldEditor setSelectedTextAttributes:selectionAttributes];
-        [fieldEditor setInsertionPointColor:[typingAttribtues objectForKey:@"NSColor"]];
+
+        NSDictionary *textAttributes = [[self themeTextAttributes] textAttributesForState:currentState];
+        [fieldEditor setInsertionPointColor:[textAttributes objectForKey:NSForegroundColorAttributeName]];
     }
+    else
+        [super setUpFieldEditorAttributes:textObj];
+    
     return textObj;
 }
 
@@ -209,7 +197,7 @@
     if(((_stateMask & OEThemeStateAnyFocus) != 0) || ((_stateMask & OEThemeStateAnyWindowActivity) != 0))
     {
         // Set the focused, windowActive, and hover properties only if the state mask is tracking the button's focus, mouse hover, and window activity properties
-        focused      = self.isEditing || [window firstResponder] == [self controlView] || [window firstResponder]==[self fieldEditor];
+        focused      = self.isEditing || [window firstResponder] == [self controlView] || [window firstResponder] == [window fieldEditor:NO forObject:self];
         windowActive = ((_stateMask & OEThemeStateAnyWindowActivity) != 0) && ([window isMainWindow] || ([window parentWindow] && [[window parentWindow] isMainWindow]));
     }
 
@@ -372,32 +360,6 @@
 {
     return [[self themeTextAttributes] textAttributesForState:[self OE_currentState]];
 }
+
 @end
 
-@interface NSTextView (ApplePrivate)
-- (void)_drawInsertionPointInRect:(NSRect)aRect color:(NSColor *)color;
-@end
-
-@implementation OESearchFieldFieldEditor
-
-- (void)drawRect:(NSRect)dirtyRect
-{
-    [[NSGraphicsContext currentContext] saveGraphicsState];
-
-    NSRect clipRect = [self bounds];
-    clipRect.origin.y += 3.0;
-    clipRect.size.height -= 3.0;
-
-    NSRectClip(clipRect);
-    [super drawRect:dirtyRect];
-
-    [[NSGraphicsContext currentContext] restoreGraphicsState];
-}
-
-- (void)_drawInsertionPointInRect:(NSRect)aRect color:(NSColor *)color
-{
-    aRect.size.height = 14;
-    aRect.origin.y    = 3;
-    [super _drawInsertionPointInRect:aRect color:color];
-}
-@end

@@ -24,14 +24,12 @@
   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#import <Cocoa/Cocoa.h>
+@import Cocoa;
 
 #import "OEGameCoreHelper.h"
-#import <OpenEmuBase/OpenEmuBase.h>
-#import <OpenEmuSystem/OpenEmuSystem.h>
 
-@protocol OEGameCoreDisplayHelper;
-@class OECorePlugin, OEGameCoreController;
+@protocol OEGameCoreOwner;
+@class OECorePlugin, OEGameCoreController, OESystemPlugin;
 
 enum _OEGameCoreManagerErrorCodes
 {
@@ -45,7 +43,7 @@ extern NSString * const OEGameCoreErrorDomain;
 
 @interface OEGameCoreManager : NSObject <OEGameCoreHelper>
 
-- (id)initWithROMPath:(NSString *)romPath romCRC32:(NSString *)romCRC32 romMD5:(NSString *)romMD5 romHeader:(NSString *)romHeader romSerial:(NSString *)romSerial systemRegion:(NSString *)systemRegion corePlugin:(OECorePlugin *)plugin systemController:(OESystemController *)systemController displayHelper:(id<OEGameCoreDisplayHelper>)displayHelper;
+- (instancetype)initWithROMPath:(NSString *)romPath romCRC32:(NSString *)romCRC32 romMD5:(NSString *)romMD5 romHeader:(NSString *)romHeader romSerial:(NSString *)romSerial systemRegion:(NSString *)systemRegion corePlugin:(OECorePlugin *)plugin systemPlugin:(OESystemPlugin *)systemPlugin gameCoreOwner:(id<OEGameCoreOwner>)gameCoreOwner;
 
 @property(readonly, copy) NSString                    *ROMPath;
 @property(readonly, copy) NSString                    *ROMCRC32;
@@ -54,11 +52,11 @@ extern NSString * const OEGameCoreErrorDomain;
 @property(readonly, copy) NSString                    *ROMSerial;
 @property(readonly, copy) NSString                    *systemRegion;
 @property(readonly, weak) OECorePlugin                *plugin;
-@property(readonly, weak) OESystemController          *systemController;
-@property(readonly, weak) id<OEGameCoreDisplayHelper>  displayHelper;
+@property(readonly, weak) OESystemPlugin *systemPlugin;
+@property(readonly, weak) id<OEGameCoreOwner> gameCoreOwner;
 
 #pragma mark - Abstract methods, must be overrode in subclasses
 
-- (void)loadROMWithCompletionHandler:(void(^)(id systemClient))completionHandler errorHandler:(void(^)(NSError *))errorHandler;
+- (void)loadROMWithCompletionHandler:(void(^)(void))completionHandler errorHandler:(void(^)(NSError *))errorHandler;
 
 @end

@@ -31,7 +31,7 @@
 #import "OEMenuDocumentView+OEMenuView.h"
 #import "NSMenuItem+OEMenuItemExtraDataAdditions.h"
 #import "OETheme.h"
-#import <Carbon/Carbon.h>
+#import "OEMenuItemExtraData.h"
 
 #pragma mark -
 #pragma mark Background Image Insets
@@ -130,11 +130,6 @@ static const CGFloat OEMenuScrollAutoStep    = 8.0;
     }
 
     return self;
-}
-
-- (void)dealloc
-{
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 - (void)viewDidMoveToSuperview
@@ -957,11 +952,6 @@ static const CGFloat OEMenuScrollAutoStep    = 8.0;
 }
 
 + (CGFloat)scrollerWidthForControlSize:(NSControlSize)controlSize scrollerStyle:(NSScrollerStyle)scrollerStyle
-{
-    return 0.0;
-}
-
-+ (CGFloat)scrollerWidth
 {
     return 0.0;
 }

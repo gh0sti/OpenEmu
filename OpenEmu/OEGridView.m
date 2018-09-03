@@ -27,12 +27,11 @@
 #import "OEGridView.h"
 
 #import "OETheme.h"
-
-#import <QuickLook/QuickLook.h>
+#import "OEThemeImage.h"
+#import "OEThemeTextAttributes.h"
 
 #import "OEGridGameCell.h"
 #import "OEGridViewFieldEditor.h"
-#import "OEBackgroundNoisePattern.h"
 #import "OECoverGridDataSourceItem.h"
 
 #import "OEMenu.h"
@@ -47,9 +46,11 @@
 #pragma mark -
 NSSize const defaultGridSize = (NSSize){26+142, 143};
 NSString *const OEImageBrowserGroupSubtitleKey = @"OEImageBrowserGroupSubtitleKey";
-NSString *const OECoverGridViewGlossDisabledKey = @"OECoverGridViewGlossDisabledKey";
 
-@implementation IKCGRenderer (ScaleFactorAdditions)
+//Removed the Category (ScaleFactorAdditions) in the IKCGRenderer implementation, for Compatibility with MacOS 10.14(beta 5)
+//With this temporary fix the App compiles in XCode 10b and Runs without crashing on startup on Mojave
+
+@implementation IKCGRenderer /*(ScaleFactorAdditions)*/
 - (unsigned long long)scaleFactor
 {
     return self->_currentScaleFactor ?: 1.0;
@@ -76,21 +77,15 @@ NSString *const OECoverGridViewGlossDisabledKey = @"OECoverGridViewGlossDisabled
 @end
 
 @implementation OEGridView
-static IKImageWrapper *lightingImage, *noiseImageHighRes, *noiseImage;
+
+static NSImage *lightingImage;
+
 + (void)initialize
 {
     if([self class] != [OEGridView class])
         return;
 
-
-    NSImage *nslightingImage = [NSImage imageNamed:@"background_lighting"];
-    lightingImage = [IKImageWrapper imageWithNSImage:nslightingImage];
-
-    OEBackgroundNoisePatternCreate();
-    OEBackgroundHighResolutionNoisePatternCreate();
-
-    noiseImage = [IKImageWrapper imageWithCGImage:OEBackgroundNoiseImageRef];
-    noiseImageHighRes = [IKImageWrapper imageWithCGImage:OEBackgroundHighResolutionNoiseImageRef];
+    lightingImage = [NSImage imageNamed:@"background_lighting"];
 }
 
 - (instancetype)init
@@ -146,6 +141,10 @@ static IKImageWrapper *lightingImage, *noiseImageHighRes, *noiseImage;
 
     _fieldEditor = [[OEGridViewFieldEditor alloc] initWithFrame:NSMakeRect(50, 50, 50, 50)];
     [self addSubview:_fieldEditor];
+    
+    CALayer *bglayer = [[CALayer alloc] init];
+    [bglayer setContents:lightingImage];
+    [self setBackgroundLayer:bglayer];
 }
 
 - (void)setGroupThemeKey:(NSString*)key
@@ -448,7 +447,9 @@ static IKImageWrapper *lightingImage, *noiseImageHighRes, *noiseImage;
     switch (event.keyCode) {
         // original implementation does not pass space key to type-select
         case kVK_Space:
-            [self handleKeyInput:event character:' '];
+            if (![self.delegate respondsToSelector:@selector(toggleQuickLook)] ||
+                ![self.delegate toggleQuickLook])
+                [self handleKeyInput:event character:' '];
             break;
             
         case kVK_Return:
@@ -719,31 +720,16 @@ static IKImageWrapper *lightingImage, *noiseImageHighRes, *noiseImage;
 
     NSUInteger scaleFactor = [renderer scaleFactor];
     [renderer setColorRed:0.03 Green:0.41 Blue:0.85 Alpha:1.0];
-
+    
     NSRect dragRect = [[self enclosingScrollView] documentVisibleRect];
+    
+    NSEdgeInsets contentInsets = [[self enclosingScrollView] contentInsets];
+    dragRect.size.height -= contentInsets.top + contentInsets.bottom + 2;
+    
     dragRect = NSInsetRect(dragRect, 1.0*scaleFactor, 1.0*scaleFactor);
     dragRect = NSIntegralRect(dragRect);
 
     [renderer drawRoundedRect:dragRect radius:8.0*scaleFactor lineWidth:2.0*scaleFactor cacheIt:YES];
-}
-
-- (void)drawBackground:(struct CGRect)arg1
-{
-    const id <IKRenderer> renderer = [self renderer];
-    const CGFloat scaleFactor = [renderer scaleFactor];
-
-    arg1 = [[self enclosingScrollView] documentVisibleRect];
-
-    [renderer drawImage:lightingImage inRect:arg1 fromRect:NSZeroRect alpha:1.0];
-
-    IKImageWrapper *image = noiseImageHighRes;
-    if(scaleFactor != 1) image = noiseImageHighRes;
-
-    NSSize imageSize = {image.size.width/scaleFactor, image.size.height/scaleFactor};
-    for(CGFloat y=NSMinY(arg1); y < NSMaxY(arg1); y+=imageSize.height)
-        for(CGFloat x=NSMinX(arg1); x < NSMaxX(arg1); x+=imageSize.width)
-            [renderer drawImage:image inRect:(CGRect){{x,y},imageSize} fromRect:NSZeroRect alpha:1.0]
-            ;
 }
 
 - (void)drawGroupsOverlays
@@ -751,15 +737,7 @@ static IKImageWrapper *lightingImage, *noiseImageHighRes, *noiseImage;
     [super drawGroupsOverlays];
 
     const id <IKRenderer> renderer = [self renderer];
-    const NSColor *fullColor  = [[NSColor blackColor] colorWithAlphaComponent:0.4];
-    const NSColor *emptyColor = [NSColor clearColor];
-
     const NSRect visibleRect = [[self enclosingScrollView] documentVisibleRect];
-    const NSRect gradientRectBottom = NSMakeRect(0.0, NSMinY(visibleRect), NSWidth(visibleRect), 8.0);
-    const NSRect gradientRectTop = NSMakeRect(0.0, NSMaxY(visibleRect) - 8.0, NSWidth(visibleRect), 8.0);
-
-    [renderer fillGradientInRect:gradientRectBottom bottomColor:fullColor topColor:emptyColor];
-    [renderer fillGradientInRect:gradientRectTop bottomColor:emptyColor   topColor:fullColor];
     
     [renderer setColorRed:0.0 Green:0.0 Blue:0.0 Alpha:1.0];
     [renderer fillRect:NSMakeRect(0, NSMinY(visibleRect)-10, NSWidth(visibleRect), 10)];
@@ -840,8 +818,25 @@ static IKImageWrapper *lightingImage, *noiseImageHighRes, *noiseImage;
 }
 
 #pragma mark -
+
 - (void)reloadCellDataAtIndex:(unsigned long long)arg1
 {
     [super reloadCellDataAtIndex:arg1];
 }
+
+- (void)reloadData
+{
+    // Store currently selected indexes.
+    NSIndexSet *selectionIndexes = self.selectionIndexes;
+    
+    [super reloadData];
+    
+    // Restore previously selected indexes within the current item count.
+    NSUInteger indexCount = [self.dataSource numberOfItemsInImageBrowser:self];
+    NSIndexSet *newSelectionIndexes = [selectionIndexes indexesPassingTest:^BOOL(NSUInteger idx, BOOL * _Nonnull stop) {
+        return idx < indexCount;
+    }];
+    [self setSelectionIndexes:newSelectionIndexes byExtendingSelection:NO];
+}
+
 @end

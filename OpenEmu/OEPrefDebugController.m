@@ -28,17 +28,20 @@
 #import "OEPrefDebugController.h"
 #import "OELibraryDatabase.h"
 #import "OESidebarController.h"
+#import "OELibraryController.h"
+#import "OEMenu.h"
 
 #import "OEDBGame.h"
 #import "OEDBImage.h"
+#import "OEDBRom.h"
 #import "OEDBSaveState.h"
 
-#import "NSURL+OELibraryAdditions.h"
 #import "NSColor+OEAdditions.h"
+
+#import "OEGameControlsBar.h"
 
 #import "OEGameViewController.h"
 
-#import "OEDOGameCoreManager.h"
 #import "OEThreadGameCoreManager.h"
 #import "OEXPCGameCoreManager.h"
 
@@ -49,12 +52,11 @@
 #import <OpenEmuSystem/OpenEmuSystem.h>
 #import "OEHUDAlert.h"
 #import "NSFileManager+OEHashingAdditions.h"
+
 #pragma mark Key sources
-#import "OEPreferencesController.h"
 #import "OESetupAssistant.h"
 #import "OECollectionViewController.h"
 #import "OEGameViewController.h"
-#import "OERetrodeDeviceManager.h"
 #import "OEGridGameCell.h"
 #import "OEGameView.h"
 #import "OEGameViewNotificationRenderer.h"
@@ -64,12 +66,18 @@
 #import "OEImportOperation.h"
 #import "OEPrefBiosController.h"
 #import "OEMainWindowController.h"
+#import "OELibraryGamesViewController.h"
+#import "OEDBSavedGamesMedia.h"
+
+#import "OpenEmu-Swift.h"
+
 @interface OELibraryDatabase (Private)
 - (void)OE_createInitialItems;
 @end
 
 @interface OEPrefDebugController () <NSTableViewDelegate, NSTableViewDataSource>
 @property NSArray *keyDescriptions;
+@property (nonatomic, readonly) NSWindow *mainWindow;
 @end
 
 NSString * const  CheckboxType  = @"Checkbox";
@@ -79,6 +87,7 @@ NSString * const  GroupType     = @"Group";
 NSString * const  ColorType     = @"Color";
 NSString * const  LabelType     = @"Label";
 NSString * const  PopoverType   = @"Popover";
+NSString * const  NumericTextFieldType = @"NumericTextField";
 
 NSString * const TypeKey  = @"type";
 NSString * const LabelKey = @"label";
@@ -87,6 +96,7 @@ NSString * const ActionKey = @"action";
 NSString * const NegatedKey = @"negated";
 NSString * const ValueKey = @"value";
 NSString * const OptionsKey = @"options";
+NSString * const NumberFormatterKey = @"numberFormatter";
 
 #define Separator() \
 @{ TypeKey:SeparatorType }
@@ -108,6 +118,8 @@ NSString * const OptionsKey = @"options";
 @{ LabelKey:_OLABEL_, ValueKey:_OVAL_ }
 #define ColorWell(_KEY_, _LABEL_) \
 @{ KeyKey:_KEY_, LabelKey:NSLocalizedString(_LABEL_, @"DebugModeLabel"), TypeKey:ColorType }
+#define NumberTextBox(_KEY_, _LABEL_, _FORMATTER_) \
+@{ KeyKey:_KEY_, LabelKey:NSLocalizedString(_LABEL_, @"Debug Label"), NumberFormatterKey:_FORMATTER_, TypeKey:NumericTextFieldType }
 
 @implementation OEPrefDebugController
 - (void)awakeFromNib
@@ -128,13 +140,21 @@ NSString * const OptionsKey = @"options";
 	[tableView setAllowsEmptySelection:YES];
 	[tableView setAllowsMultipleSelection:NO];
 	[tableView setAllowsTypeSelect:NO];
+    
+    [tableView reloadData];
 }
 
 - (void)OE_setupKeyDescription
 {
+    NSNumberFormatter *adcSensitivityNF = [[NSNumberFormatter alloc] init];
+    [adcSensitivityNF setAllowsFloats:YES];
+    [adcSensitivityNF setMinimum:@0.01];
+    [adcSensitivityNF setMaximum:@0.99];
+    [adcSensitivityNF setNumberStyle:NSNumberFormatterDecimalStyle];
+    
     self.keyDescriptions =  @[
                               FirstGroup(@"General"),
-                              Checkbox(OEDebugModeKey, @"Debug Mode"),
+                              Checkbox([OEPreferencesWindowController debugModeKey], @"Debug Mode"),
                               Checkbox(OESetupAssistantHasFinishedKey, @"Setup Assistant has finished"),
                               Popover(@"Region", @selector(changeRegion:),
                                       Option(@"Auto", @(-1)),
@@ -145,26 +165,24 @@ NSString * const OptionsKey = @"options";
                                       ),
                               Popover(@"Run games using", @selector(changeGameMode:),
                                       Option(@"XPC", NSStringFromClass([OEXPCGameCoreManager class])),
-                                      Option(@"Distributed Objects", NSStringFromClass([OEDOGameCoreManager class])),
                                       Option(@"Background Thread", NSStringFromClass([OEThreadGameCoreManager class])),
                                       ),
 
                               Group(@"Library Window"),
                               Button(@"Reset main window size", @selector(resetMainWindow:)),
                               NCheckbox(OEMenuOptionsStyleKey, @"Dark GridView context menu"),
-                              Checkbox(OERetrodeSupportEnabledKey, @"Enable Retrode support"),
-                              Checkbox(OECoverGridViewGlossDisabledKey, @"Disable grid view gloss overlay"),
                               Checkbox(OECoverGridViewAutoDownloadEnabledKey, @"Download missing artwork on the fly"),
                               Checkbox(OEDisplayGameTitle, @"Show game titles instead of rom names"),
                               Checkbox(OEImportManualSystems, @"Manually choose system on import"),
+                              Checkbox(OEDBSavedGamesMediaShowsAutoSaves, @"Show autosave states in save state category"),
+                              Checkbox(OEDBSavedGamesMediaShowsQuickSaves, @"Show quicksave states in save state category"),
+                              Button(@"Show game scanner view", @selector(showGameScannerView:)),
+                              Button(@"Hide game scanner view", @selector(hideGameScannerView:)),
 
                               Group(@"HUD Bar / Gameplay"),
-                              NCheckbox(OEDontShowGameTitleInWindowKey, @"Use game name as window title"),
                               Checkbox(OEGameControlsBarCanDeleteSaveStatesKey, @"Can delete save states"),
                               NCheckbox(OEGameControlsBarHidesOptionButtonKey, @"Show options button"),
-                              Checkbox(OEForceCorePicker, @"Use gamecore picker"),
-                              Checkbox(OEShowSaveStateNotificationKey, @"Show quicksave notification during gameplay"),
-                              Checkbox(OEShowScreenShotNotificationKey, @"Show screenshot notification during gameplay"),
+                              Checkbox(OEShowNotificationsKey, @"Show notifications during gameplay"),
                               Checkbox(OESaveStateUseQuickSaveSlotsKey, @"Use quicksave slots"),
                               Checkbox(OEGameControlsBarShowsQuickSaveStateKey, @"Show quicksave in menu"),
                               Checkbox(OEGameControlsBarShowsAutoSaveStateKey, @"Show autosave in menu"),
@@ -182,7 +200,7 @@ NSString * const OptionsKey = @"options";
                               Checkbox(@"logsHIDEvents", @"Log HID Events"),
                               Checkbox(@"logsHIDEventsNoKeyboard", @"Log Keyboard Events"),
                               Checkbox(@"OEShowAllGlobalKeys", @"Show all global keys"),
-                              Checkbox(OEPreferencesAlwaysShowBiosKey, @"Always show BIOS preferences"),
+                              NumberTextBox(@"OESystemResponderADCThreshold", @"Threshold for analog controls bound to buttons", adcSensitivityNF),
 
                               Group(@"Save States"),
                               Button(@"Set default save states directory", @selector(restoreSaveStatesDirectory:)),
@@ -195,7 +213,9 @@ NSString * const OptionsKey = @"options";
                               Button(@"Cancel OpenVGDB Update", @selector(cancelOpenVGDBUpdate:)),
 
                               Group(@"Database Actions"),
-                              Button(@"Delete Artwork that can be downloaded", @selector(removeArtworkWithRemoteBacking:)),
+                              Button(@"Delete useless image objects", @selector(removeUselessImages:)),
+                              Button(@"Delete artwork that can be downloaded", @selector(removeArtworkWithRemoteBacking:)),
+                              Button(@"Sync games without artwork", @selector(syncGamesWithoutArtwork:)),
                               Button(@"Download missing artwork", @selector(downloadMissingArtwork:)),
                               Button(@"Remove untracked artwork files", @selector(removeUntrackedImageFiles:)),
                               Button(@"Cleanup rom hashes", @selector(cleanupHashes:)),
@@ -205,6 +225,20 @@ NSString * const OptionsKey = @"options";
                               Button(@"Perform Sanity Check on Database", @selector(sanityCheck:)),
                               Label(@""),
                               ];
+}
+
+#pragma mark - Retrieving The Main Window
+- (NSWindow *)mainWindow
+{
+    for (NSWindow *window in NSApp.windows)
+    {
+        if([window.windowController isKindOfClass:[OEMainWindowController class]])
+        {
+            return window;
+        }
+    }
+    
+    return nil;
 }
 
 #pragma mark - Actions
@@ -223,7 +257,7 @@ NSString * const OptionsKey = @"options";
         [standardUserDefaults setObject:@(value) forKey:OERegionKey];
     }
 
-    [[NSNotificationCenter defaultCenter] postNotificationName:OEDBSystemsDidChangeNotification object:self];
+    [[NSNotificationCenter defaultCenter] postNotificationName:OEDBSystemAvailabilityDidChangeNotification object:self];
 }
 
 - (void)changeGameMode:(NSPopUpButton*)sender
@@ -234,18 +268,45 @@ NSString * const OptionsKey = @"options";
 #pragma mark -
 - (void)resetMainWindow:(id)sender
 {
-    [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"NSSplitView Subview Frames mainSplitView"];
-    [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"NSWindow Frame LibraryWindow"];
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    
+    [defaults removeObjectForKey:@"NSSplitView Subview Frames mainSplitView"];
+    [defaults removeObjectForKey:@"NSWindow Frame LibraryWindow"];
+    [defaults removeObjectForKey:@"lastSidebarWidth"];
+    [defaults removeObjectForKey:OELastGridSizeKey];
 
-    [[NSApp windows] enumerateObjectsUsingBlock:^(NSWindow *window, NSUInteger idx, BOOL *stop) {
-        if([[window windowController] isKindOfClass:[OEMainWindowController class]])
-        {
-            [window setFrame:NSMakeRect(0, 0, 830, 555+22) display:NO];
-            [window center];
-        }
-    }];
+    NSWindow *mainWindow = self.mainWindow;
+    
+    // Matches the content size specified in MainWindow.xib.
+    [mainWindow setFrame:NSMakeRect(0, 0, 830, 555 + 22) display:NO];
+    
+    [mainWindow center];
+
+    [[NSNotificationCenter defaultCenter] postNotificationName:OELibrarySplitViewResetSidebarNotification object:self];
 }
- 
+
+- (void)showGameScannerView:(id)sender {
+    
+    OEMainWindowController *mainWindowController = self.mainWindow.windowController;
+    id <OELibrarySubviewController> currentViewController = mainWindowController.libraryController.currentSubviewController;
+    
+    if([currentViewController isKindOfClass:[OELibraryGamesViewController class]])
+    {
+        [((OELibraryGamesViewController *)currentViewController).gameScannerController showGameScannerViewAnimated:YES];
+    }
+}
+
+- (void)hideGameScannerView:(id)sender {
+    
+    OEMainWindowController *mainWindowController = self.mainWindow.windowController;
+    id <OELibrarySubviewController> currentViewController = mainWindowController.libraryController.currentSubviewController;
+    
+    if([currentViewController isKindOfClass:[OELibraryGamesViewController class]])
+    {
+        [((OELibraryGamesViewController *)currentViewController).gameScannerController hideGameScannerViewAnimated:YES];
+    }
+}
+
 #pragma mark -
 - (void)restoreSaveStatesDirectory:(id)sender
 {
@@ -267,13 +328,17 @@ NSString * const OptionsKey = @"options";
 {
     OELibraryDatabase *database = [OELibraryDatabase defaultDatabase];
     NSManagedObjectContext *context = [database mainThreadContext];
+    
     NSArray *allRoms = [OEDBRom allObjectsInContext:context];
-    [allRoms enumerateObjectsUsingBlock:^(OEDBRom *rom, NSUInteger idx, BOOL *stop) {
+    
+    for (OEDBRom *rom in allRoms) {
+        
         NSSortDescriptor *timeStampSort = [NSSortDescriptor sortDescriptorWithKey:@"timestamp" ascending:NO];
         NSArray *roms = [[rom saveStates] sortedArrayUsingDescriptors:@[timeStampSort]];
         NSPredicate *autosaveFilter = [NSPredicate predicateWithFormat:@"name BEGINSWITH %@", OESaveStateAutosaveName];
         NSArray *autosaves = [roms filteredArrayUsingPredicate:autosaveFilter];
         OEDBSaveState *autosave = nil;
+        
         for(int i=0; i < [autosaves count]; i++)
         {
             OEDBSaveState *state = [autosaves objectAtIndex:i];
@@ -291,9 +356,9 @@ NSString * const OptionsKey = @"options";
                 [state delete];
             }
         }
-
+        
         [autosave moveToDefaultLocation];
-    }];
+    }
     [context save:nil];
 }
 
@@ -366,14 +431,18 @@ NSString * const OptionsKey = @"options";
 #pragma mark - OpenVGDB Actions
 - (void)updateOpenVGDB:(id)sender
 {
+    DLog(@"Removing OpenVGDB update check date and version from user defaults to force update.");
+    
     NSUserDefaults *standardDefaults = [NSUserDefaults standardUserDefaults];
     [standardDefaults removeObjectForKey:OEOpenVGDBUpdateCheckKey];
     [standardDefaults removeObjectForKey:OEOpenVGDBVersionKey];
 
     OEGameInfoHelper *helper = [OEGameInfoHelper sharedHelper];
-    NSString *version = nil;
-    NSURL *url = [helper checkForUpdates:&version];
-    [helper installVersion:version withDownloadURL:url];
+    [helper checkForUpdatesWithHandler:^(NSURL * _Nullable url, NSString * _Nullable version) {
+        if (url && version) {
+            [helper installVersion:version withDownloadURL:url];
+        }
+    }];
 }
 
 - (void)cancelOpenVGDBUpdate:(id)sender
@@ -383,6 +452,28 @@ NSString * const OptionsKey = @"options";
 }
 
 #pragma mark - Database actions
+- (void)removeUselessImages:(id)sender
+{
+    // removes all image objects that are neither on disc nor have a source
+    OELibraryDatabase      *library = [OELibraryDatabase defaultDatabase];
+    NSManagedObjectContext *context = [library mainThreadContext];
+    NSFetchRequest *request = [NSFetchRequest fetchRequestWithEntityName:[OEDBImage entityName]];
+    NSPredicate  *predicate = [NSPredicate predicateWithFormat:@"relativePath == nil and source == nil"];
+    [request setPredicate:predicate];
+
+    NSError *error  = nil;
+    NSArray *result = [context executeFetchRequest:request error:&error];
+    if(!result)
+    {
+        DLog(@"Could not execute fetch request: %@", error);
+        return;
+    }
+
+    [result makeObjectsPerformSelector:@selector(delete)];
+    [context save:nil];
+    NSLog(@"Deleted %ld images!", result.count);
+}
+
 - (void)removeArtworkWithRemoteBacking:(id)sender
 {
     OELibraryDatabase      *library = [OELibraryDatabase defaultDatabase];
@@ -415,6 +506,28 @@ NSString * const OptionsKey = @"options";
     [context save:nil];
     NSLog(@"Deleted %ld image files!", count);
 }
+
+- (void)syncGamesWithoutArtwork:(id)sender
+{
+    OELibraryDatabase      *library = [OELibraryDatabase defaultDatabase];
+    NSManagedObjectContext *context = [library mainThreadContext];
+    NSFetchRequest *request = [NSFetchRequest fetchRequestWithEntityName:[OEDBGame entityName]];
+    NSPredicate  *predicate = [NSPredicate predicateWithFormat:@"boxImage == nil"];
+    [request setPredicate:predicate];
+    NSError *error  = nil;
+    NSArray *result = [context executeFetchRequest:request error:&error];
+    if(!result)
+    {
+        DLog(@"Could not execute fetch request: %@", error);
+        return;
+    }
+
+    NSLog(@"Found %ld games", [result count]);
+    for(OEDBGame *game in result){
+        [game requestInfoSync];
+    }
+}
+
 
 - (void)downloadMissingArtwork:(id)sender
 {
@@ -486,9 +599,9 @@ NSString * const OptionsKey = @"options";
         [artwork removeObject:[image imageURL]];
     }
 
-    [artwork enumerateObjectsUsingBlock:^(NSURL *untrackedFile, BOOL *stop) {
+    for (NSURL *untrackedFile in artwork) {
         [[NSFileManager defaultManager] removeItemAtURL:untrackedFile error:nil];
-    }];
+    }
     NSLog(@"Removed %ld unknown files from artwork directory", [artwork count]);
 }
 
@@ -497,11 +610,10 @@ NSString * const OptionsKey = @"options";
     OELibraryDatabase      *library = [OELibraryDatabase defaultDatabase];
     NSManagedObjectContext *context = [library mainThreadContext];
 
-    NSArray *objects = [OEDBRom allObjectsInContext:context];
-    [objects enumerateObjectsUsingBlock:^(OEDBRom *rom, NSUInteger idx, BOOL *stop) {
-        [rom setMd5:[[rom md5] lowercaseString]];
-        [rom setCrc32:[[rom crc32] lowercaseString]];
-    }];
+    for (OEDBRom *rom in [OEDBRom allObjectsInContext:context]) {
+        rom.md5 = rom.md5.lowercaseString;
+        rom.crc32 = rom.crc32.lowercaseString;
+    }
 
     [context save:nil];
 }
@@ -525,10 +637,10 @@ NSString * const OptionsKey = @"options";
         lastRom = rom;
     }
 
-    [romsToDelete enumerateObjectsUsingBlock:^(OEDBRom *rom, NSUInteger idx, BOOL *stop) {
-        [[rom game] deleteByMovingFile:NO keepSaveStates:YES];
+    for (OEDBRom *rom in romsToDelete) {
+        [rom.game deleteByMovingFile:NO keepSaveStates:YES];
         [rom deleteByMovingFile:NO keepSaveStates:NO];
-    }];
+    }
 
     NSLog(@"%ld roms deleted", [romsToDelete count]);
     [context save:nil];
@@ -625,7 +737,22 @@ NSString * const OptionsKey = @"options";
     }
     if(counts[0]) NSLog(@"Found %ld images without game!", counts[0]);
     
-    
+    // Look for images without source
+    allImages = [OEDBImage allObjectsInContext:context];
+    counts[0] = 0;
+    counts[1] = 0;
+    for(OEDBImage *image in allImages)
+    {
+        if(image.source == nil || [image.source isEqualToString:@""])
+            counts[0] ++;
+        if(image.relativePath == nil || [image.relativePath isEqualToString:@""])
+            counts[1] ++;
+        if(image.image == nil)
+            counts[2] ++;
+    }
+    if(counts[0]) NSLog(@"Found %ld images without source!", counts[0]);
+    if(counts[1]) NSLog(@"Found %ld images without local path!", counts[1]);
+
     NSLog(@"= Done =");
 }
 #pragma mark -
@@ -644,8 +771,7 @@ NSString * const OptionsKey = @"options";
         }
 
         NSString *key  = [colorObject objectForKey:KeyKey];
-        NSColor *color = [sender color];
-        NSString *value = OENSStringFromColor(color);
+        NSString *value = [[(NSColorWell *)sender color] toString];
 
         [[NSUserDefaults standardUserDefaults] setObject:value forKey:key];
     }
@@ -720,7 +846,7 @@ NSString * const OptionsKey = @"options";
         NSColor     *color     = [NSColor blackColor];
         if([userDefaults stringForKey:key])
         {
-            color = OENSColorFromString([userDefaults stringForKey:key]);
+            color = [NSColor colorFromString:[userDefaults stringForKey:key]];
         }
         [colorWell setColor:color];
         [colorWell setAction:@selector(changeUDColor:)];
@@ -752,6 +878,26 @@ NSString * const OptionsKey = @"options";
         }];
 
         [self OE_setupSelectedItemForPopupButton:popup withKeyDescription:keyDescription];
+    }
+    else if (type == NumericTextFieldType)
+    {
+        NSString *label = [keyDescription objectForKey:LabelKey];
+        NSNumberFormatter *nf = [keyDescription objectForKey:NumberFormatterKey];
+        NSString *udkey = [keyDescription objectForKey:KeyKey];
+        
+        NSTextField *labelField = [[cellView subviews] objectAtIndex:0];
+        NSTextField *inputField = [[cellView subviews] objectAtIndex:1];
+        
+        [labelField setStringValue:label];
+        [inputField setFormatter:nf];
+        NSString *keypath = [NSString stringWithFormat:@"values.%@", udkey];
+        [inputField bind:NSValueBinding toObject:[NSUserDefaultsController sharedUserDefaultsController] withKeyPath:keypath options:nil];
+        
+        NSString *validRangeFormat = NSLocalizedString(@"Range: %@ to %@", @"Range indicator tooltip for numeric text boxes in the Debug Preferences");
+        NSString *min = [nf stringFromNumber:nf.minimum];
+        NSString *max = [nf stringFromNumber:nf.maximum];
+        NSString *tooltip = [NSString stringWithFormat:validRangeFormat, min, max];
+        [inputField setToolTip:tooltip];
     }
     return cellView;
 }
@@ -840,8 +986,4 @@ NSString * const OptionsKey = @"options";
     return @"OEPrefDebugController";
 }
 
-- (BOOL)isVisible
-{
-    return [[NSUserDefaults standardUserDefaults] boolForKey:OEDebugModeKey];
-}
 @end

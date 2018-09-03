@@ -25,11 +25,10 @@
  */
 
 #import "OEGameControlsBar.h"
-#import "NSImage+OEDrawingAdditions.h"
-#import "NSWindow+OEFullScreenAdditions.h"
 
 #import "OEButton.h"
 #import "OESlider.h"
+#import "OESliderCell.h"
 
 #import "OEMenu.h"
 #import "OEDBRom.h"
@@ -44,12 +43,13 @@
 
 #import "OEDBSaveState.h"
 
-#import "OEGameIntegralScalingDelegate.h"
 #import "OEAudioDeviceManager.h"
 
-#import "OECheats.h"
-
 #import "OETheme.h"
+
+@import QuartzCore;
+
+#import "OpenEmu-Swift.h"
 
 #pragma mark - Public variables
 
@@ -60,7 +60,7 @@ NSString *const OEGameControlsBarHidesOptionButtonKey   = @"HUDBarWithoutOptions
 NSString *const OEGameControlsBarFadeOutDelayKey        = @"fadeoutdelay";
 NSString *const OEGameControlsBarShowsAudioOutput       = @"HUDBarShowAudioOutput";
 
-@interface OEHUDControlsBarView : NSView
+@interface OEHUDControlsBarView : NSView <CAAnimationDelegate>
 
 @property(strong, readonly) OESlider *slider;
 @property(strong, readonly) OEButton *fullScreenButton;
@@ -69,7 +69,7 @@ NSString *const OEGameControlsBarShowsAudioOutput       = @"HUDBarShowAudioOutpu
 - (void)setupControls;
 @end
 
-@interface OEGameControlsBar ()
+@interface OEGameControlsBar () <CAAnimationDelegate>
 @property (strong) id eventMonitor;
 @property (strong) NSTimer *fadeTimer;
 @property (strong) NSArray *filterPlugins;
@@ -149,7 +149,6 @@ NSString *const OEGameControlsBarShowsAudioOutput       = @"HUDBarShowAudioOutpu
     _gameViewController = nil;
 
     [NSEvent removeMonitor:_eventMonitor];
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
 
     _gameWindow = nil;
 }
@@ -186,13 +185,18 @@ NSString *const OEGameControlsBarShowsAudioOutput       = @"HUDBarShowAudioOutpu
         [[self animator] setAlphaValue:1.0];
 }
 
-- (void)hide
+- (void)hideAnimated:(BOOL)animated
 {
     [NSCursor setHiddenUntilMouseMoves:YES];
 
     // only hide if 'docked' to game window (aka on the same screen)
     if([self parentWindow])
-        [[self animator] setAlphaValue:0.0];
+    {
+        if(animated)
+            [[self animator] setAlphaValue:0.0];
+        else
+            [self setAlphaValue:0];
+    }
 
     [_fadeTimer invalidate];
     _fadeTimer = nil;
@@ -247,7 +251,7 @@ NSString *const OEGameControlsBarShowsAudioOutput       = @"HUDBarShowAudioOutpu
             [_fadeTimer invalidate];
             _fadeTimer = nil;
 
-            [self hide];
+            [self hideAnimated:YES];
         }
         else
         {
@@ -384,7 +388,7 @@ NSString *const OEGameControlsBarShowsAudioOutput       = @"HUDBarShowAudioOutpu
     if([corePlugins count] > 1)
     {
         corePlugins = [corePlugins sortedArrayUsingComparator:^NSComparisonResult(id obj1, id obj2) {
-            return [[obj1 displayName] compare:[obj2 displayName]];
+            return [[obj1 displayName] localizedCaseInsensitiveCompare:[obj2 displayName]];
         }];
 
         for(OECorePlugin *aPlugin in corePlugins)
@@ -827,7 +831,7 @@ NSString *const OEGameControlsBarShowsAudioOutput       = @"HUDBarShowAudioOutpu
     [volumeUpButton setToolTipStyle:OEToolTipStyleHUD];
     [self addSubview:volumeUpButton];
 
-    _slider = [[OESlider alloc] initWithFrame:NSMakeRect(240 + (hideOptions ? 0 : 50), 13, 80, 23)];
+    _slider = [[OESlider alloc] initWithFrame:NSMakeRect(238 + (hideOptions ? 0 : 50), 13, 76, 23)];
 
     OESliderCell *sliderCell = [[OESliderCell alloc] init];
     [_slider setCell:sliderCell];

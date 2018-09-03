@@ -33,6 +33,8 @@
 #import "OECoreUpdater.h"
 #import "OECoreDownload.h"
 
+@import QuartzCore;
+
 #pragma mark - Public variables
 
 // Public user default keys
@@ -122,7 +124,7 @@ enum : OEFSMEventLabel
 - (void)OE_goForwardToView:(NSView *)view;
 - (void)OE_goBackToView:(NSView *)view;
 - (void)OE_dissolveToView:(NSView *)view;
-- (void)OE_processVolumeNotification:(NSNotification *)notification;;
+- (void)OE_processVolumeNotification:(NSNotification *)notification;
 
 @end
 
@@ -528,7 +530,7 @@ enum : OEFSMEventLabel
     
     if([cell isKindOfClass:[NSTextFieldCell class]])
         return [cell stringValue];
-    return nil;
+    return @"";
 }
 @end
 

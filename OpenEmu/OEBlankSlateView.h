@@ -24,10 +24,11 @@
   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#import <Cocoa/Cocoa.h>
-#import "OESystemPlugin.h"
+@import Cocoa;
 #import "OEBlankSlateBackgroundView.h"
 @class OEBlankSlateView;
+
+extern NSString * const OECDBasedGamesUserGuideURLString;
 
 @protocol OEBlankSlateViewDelegate <NSObject>
 @optional

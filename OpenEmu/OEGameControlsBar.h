@@ -24,8 +24,7 @@
   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#import <Cocoa/Cocoa.h>
-#import "OEMenu.h"
+@import Cocoa;
 
 extern NSString *const OEGameControlsBarCanDeleteSaveStatesKey;
 extern NSString *const OEGameControlsBarShowsAutoSaveStateKey;
@@ -40,7 +39,7 @@ extern NSString *const OEGameControlsBarShowsAudioOutput;
 - (id)initWithGameViewController:(OEGameViewController*)controller;
 
 - (void)show;
-- (void)hide;
+- (void)hideAnimated:(BOOL)animated;
 
 - (BOOL)canFadeOut;
 

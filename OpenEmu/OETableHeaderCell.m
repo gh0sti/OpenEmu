@@ -27,7 +27,6 @@
 #import "OETableHeaderCell.h"
 
 #import "OEUIDrawingUtils.h"
-#import "NSImage+OEDrawingAdditions.h"
 #import "OETheme.h"
 #pragma mark - Private variables
 
@@ -124,7 +123,7 @@ static const CGFloat _OESortIndicatorMargin = 5;
     const NSInteger priority         = ([[sortDescriptor key] isEqualToString:[[tableColumn sortDescriptorPrototype] key]] ? 1 : 0);
 
 
-	NSFont *titleFont = [[NSFontManager sharedFontManager] fontWithFamily:@"Lucida Grande" traits:0 weight:4 size:11];
+    NSFont *titleFont = [NSFont boldSystemFontOfSize:11];
 	NSMutableParagraphStyle *paraStyle = [[NSMutableParagraphStyle alloc] init];
 	[paraStyle setLineBreakMode:NSLineBreakByTruncatingTail];
     [paraStyle setAlignment:[self alignment]];

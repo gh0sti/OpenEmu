@@ -24,8 +24,7 @@
   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#import <Cocoa/Cocoa.h>
-#import "NSDocument+OEAdditions.h"
+@import Cocoa;
 
 extern NSString *const OEGameCoreManagerModePreferenceKey;
 extern NSString *const OEGameDocumentErrorDomain;
@@ -47,8 +46,9 @@ enum _OEGameDocumentErrorCodes
 @class OEDBSaveState;
 @class OEGameViewController;
 @class OESystemPlugin;
+@class OEEvent;
 
-@interface OEGameDocument : NSDocument <OEGlobalEventsHandler>
+@interface OEGameDocument : NSDocument
 
 - (id)initWithRom:(OEDBRom *)rom core:(OECorePlugin *)core error:(NSError **)outError;
 - (id)initWithGame:(OEDBGame *)game core:(OECorePlugin *)core error:(NSError **)outError;
@@ -69,21 +69,27 @@ enum _OEGameDocumentErrorCodes
 
 @property(nonatomic) NSWindowController *gameWindowController;
 
-@property(readonly) OESystemResponder *gameSystemResponder;
-
 @property(getter=isEmulationPaused) BOOL emulationPaused;
+
+@property(nonatomic) BOOL handleEvents;
+@property(nonatomic) BOOL handleKeyboardEvents;
 
 #pragma mark - Actions
 - (IBAction)editControls:(id)sender;
 
 #pragma mark - Volume
+@property (readonly) float volume;
 - (IBAction)changeAudioOutputDevice:(id)sender;
 - (IBAction)changeVolume:(id)sender;
 - (IBAction)mute:(id)sender;
 - (IBAction)unmute:(id)sender;
+- (void)volumeDown:(id)sender;
+- (void)volumeUp:(id)sender;
 
 #pragma mark - Controlling Emulation
 - (void)switchCore:(id)sender;
+- (void)toggleEmulationPaused:(id)sender;
+- (void)resetEmulation:(id)sender;
 - (IBAction)stopEmulation:(id)sender;
 
 #pragma mark - Cheats
@@ -99,13 +105,17 @@ enum _OEGameDocumentErrorCodes
 
 #pragma mark - Saving States
 - (BOOL)supportsSaveStates;
+- (void)quickSave:(id)sender;
+- (void)quickLoad:(id)sender;
 
 #pragma mark - Deleting States
 - (IBAction)deleteSaveState:(id)sender;
 
+#pragma mark - Full Screen
+- (void)toggleFullScreen:(id)sender;
+
 #pragma mark - OEGameViewController Methods
 
-- (void)gameViewController:(OEGameViewController *)sender setDrawSquarePixels:(BOOL)drawSquarePixels;
 - (void)gameViewController:(OEGameViewController *)sender didReceiveMouseEvent:(OEEvent *)event;
 
 @end

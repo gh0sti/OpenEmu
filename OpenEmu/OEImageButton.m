@@ -25,7 +25,6 @@
  */
 
 #import "OEImageButton.h"
-#import "NSImage+OEDrawingAdditions.h"
 
 @implementation OEImageButton
 @synthesize isInHover;
@@ -62,12 +61,6 @@
 - (void)windowChanged:(id)sender
 {
     [self setNeedsDisplay:YES];
-}
-
-- (void)dealloc 
-{
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
-    
 }
 
 - (void)mouseEntered:(NSEvent *)theEvent

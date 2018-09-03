@@ -26,10 +26,10 @@
 
 "Archived Game" = "Gioco archiviato";
 
-"GameCorePlugin" = "Plugin Core";
+"GameCorePlugin" = "Plugin core";
 
-"OpenEmu Save State" = "Salvataggio di stato OpenEmu";
+"OpenEmu Save State" = "Salvataggio emulazione OpenEmu";
 
-"System Plugin" = "Plugin Sistema";
+"System Plugin" = "Plugin di sistema";
 
 "VideoFilterPlugin" = "Plugin filtro video";

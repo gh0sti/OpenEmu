@@ -28,14 +28,15 @@
 #import "OEGridView.h"
 
 #import "OETheme.h"
-#import "NSImage+OEDrawingAdditions.h"
+#import "OEThemeImage.h"
 #import "OECoverGridDataSourceItem.h"
+
+#import "OpenEmu-Swift.h"
 
 static const CGFloat OEGridCellTitleHeight                      = 16.0;        // Height of the title view
 static const CGFloat OEGridCellImageTitleSpacing                = 17.0;        // Space between the image and the title
 static const CGFloat OEGridCellSubtitleHeight                   = 11.0;        // Subtitle height
 __unused static const CGFloat OEGridCellSubtitleWidth                    = 56.0;        // Subtitle's width
-static const CGFloat OEGridCellGlossWidthToHeightRatio          = 0.6442;      // Gloss image's width to height ratio
 
 static const CGFloat OEGridCellImageContainerLeft   = 13.0;
 static const CGFloat OEGridCellImageContainerTop    = 7.0;
@@ -44,8 +45,6 @@ static const CGFloat OEGridCellImageContainerBottom = OEGridCellTitleHeight + OE
 
 __strong static OEThemeImage *selectorRingImage = nil;
 
-extern NSString *const OECoverGridViewGlossDisabledKey;
-
 @interface OEGridMediaItemCell ()
 @property NSImage *selectorImage;
 @property CALayer *selectionLayer;
@@ -53,7 +52,6 @@ extern NSString *const OECoverGridViewGlossDisabledKey;
 @property CALayer     *foregroundLayer;
 @property CATextLayer *textLayer;
 @property CATextLayer *subtextLayer;
-@property CALayer     *glossyLayer;
 @property CALayer     *backgroundLayer;
 
 @property BOOL    lastWindowActive;
@@ -190,7 +188,7 @@ static NSDictionary *disabledActions = nil;
     [_foregroundLayer setActions:disabledActions];
 
     // setup title layer
-    NSFont *titleFont = [[NSFontManager sharedFontManager] fontWithFamily:@"Lucida Grande" traits:NSBoldFontMask weight:9 size:12];
+    NSFont *titleFont = [NSFont boldSystemFontOfSize:12];
     _textLayer = [CATextLayer layer];
     [_textLayer setActions:disabledActions];
 
@@ -221,17 +219,12 @@ static NSDictionary *disabledActions = nil;
     [_subtextLayer setShadowOpacity:1.0];
     [_foregroundLayer addSublayer:_subtextLayer];
 
-    // setup gloss layer
-    _glossyLayer = [CALayer layer];
-    [_glossyLayer setActions:disabledActions];
-    [_foregroundLayer addSublayer:_glossyLayer];
-
     // setup background layer
     _backgroundLayer = [CALayer layer];
     [_backgroundLayer setActions:disabledActions];
     [_backgroundLayer setShadowColor:[[NSColor blackColor] CGColor]];
-    [_backgroundLayer setShadowOffset:CGSizeMake(0.0, -3.0)];
-    [_backgroundLayer setShadowRadius:3.0];
+    [_backgroundLayer setShadowOffset:CGSizeMake(0.0, -1.0)];
+    [_backgroundLayer setShadowRadius:1.0];
     [_backgroundLayer setContentsGravity:kCAGravityResize];
 }
 
@@ -299,20 +292,6 @@ static NSDictionary *disabledActions = nil;
         [_subtextLayer setFrame:relativeSubtitleFrame];
         [_subtextLayer setString:subTitle];
 
-		// add a glossy overlay if image is loaded
-        if(state == IKImageStateReady)
-        {
-            NSImage *glossyImage = [self OE_glossImageWithSize:relativeImageFrame.size];
-            [_glossyLayer setContentsScale:scaleFactor];
-            [_glossyLayer setFrame:relativeImageFrame];
-            [_glossyLayer setContents:glossyImage];
-            [_glossyLayer setHidden:NO];
-        }
-        else
-        {
-            [_glossyLayer setHidden:YES];
-        }
-
         // the selection layer is cached else the CATransition initialization fires the layers to be redrawn which causes the CATransition to be initalized again: loop
         if(! CGRectEqualToRect([_selectionLayer frame], CGRectInset(relativeImageFrame, -6.0, -6.0)) || windowActive != _lastWindowActive)
         {
@@ -323,17 +302,24 @@ static NSDictionary *disabledActions = nil;
         if(isSelected && (!_selectionLayer || windowActive != _lastWindowActive))
         {
             _lastWindowActive = windowActive;
-
+            
             CGRect selectionFrame = CGRectInset(relativeImageFrame, -6.0, -6.0);
             CALayer *selectionLayer = [CALayer layer];
-            [selectionLayer setActions:disabledActions];
-            [selectionLayer setFrame:selectionFrame];
-            [selectionLayer setEdgeAntialiasingMask:NSViewWidthSizable|NSViewMaxYMargin];
-
-            NSImage *selectorImage = [self OE_selectorImageWithSize:selectionFrame.size];
-            [selectionLayer setContents:selectorImage];
+            selectionLayer.actions = disabledActions;
+            selectionLayer.frame = selectionFrame;
+            
+            selectionLayer.borderWidth = 4.0;
+            selectionLayer.borderColor = _lastWindowActive ?
+            [NSColor colorWithCalibratedRed:0.243
+                                      green:0.502
+                                       blue:0.871
+                                      alpha:1.0].CGColor :
+            [NSColor colorWithCalibratedWhite:0.651
+                                        alpha:1.0].CGColor;
+            selectionLayer.cornerRadius = 3.0;
+            
             [_foregroundLayer addSublayer:selectionLayer];
-
+            
             _selectionLayer = selectionLayer;
         }
         else if(!isSelected)
@@ -395,114 +381,6 @@ static NSDictionary *disabledActions = nil;
 {
     // TODO: why do we use the background layer?
     [[[self imageBrowserView] backgroundLayer] setValue:image forKey:name];
-}
-
-- (NSImage *)OE_glossImageWithSize:(NSSize)size
-{
-    if([[NSUserDefaults standardUserDefaults] boolForKey:OECoverGridViewGlossDisabledKey]) return nil;
-    if(NSEqualSizes(size, NSZeroSize)) return nil;
-
-    static NSCache *cache = nil;
-    if(cache == nil)
-    {
-        cache = [[NSCache alloc] init];
-        [cache setCountLimit:30];
-    }
-
-    NSString *key = NSStringFromSize(size);
-    NSImage *glossImage = [cache objectForKey:key];
-    if(glossImage) return glossImage;
-
-    BOOL(^drawingBlock)(NSRect) = ^BOOL(NSRect dstRect)
-    {
-        NSGraphicsContext *currentContext = [NSGraphicsContext currentContext];
-
-        // Draw gloss image fit proportionally within the cell
-        NSImage *boxGlossImage = [NSImage imageNamed:@"box_gloss"];
-        CGRect   boxGlossFrame = CGRectMake(0.0, 0.0, size.width, floor(size.width * OEGridCellGlossWidthToHeightRatio));
-        boxGlossFrame.origin.y = size.height - CGRectGetHeight(boxGlossFrame);
-        [boxGlossImage drawInRect:boxGlossFrame fromRect:NSZeroRect operation:NSCompositeCopy fraction:1.0];
-
-        [currentContext saveGraphicsState];
-        [currentContext setShouldAntialias:YES];
-
-        const NSRect bounds = NSMakeRect(0.0, 0.0, size.width-0.5, size.height-0.5);
-        [[NSColor colorWithCalibratedWhite:1.0 alpha:0.4] setStroke];
-        [[NSBezierPath bezierPathWithRect:NSOffsetRect(bounds, 0.0, -1.0)] stroke];
-
-        [[NSColor blackColor] setStroke];
-        NSBezierPath *path = [NSBezierPath bezierPathWithRect:bounds];
-        [path stroke];
-
-        [currentContext restoreGraphicsState];
-
-        return YES;
-    };
-
-    glossImage = [NSImage imageWithSize:size flipped:NO drawingHandler:drawingBlock];
-
-    [cache setObject:glossImage forKey:key cost:size.height*size.width];
-
-    return glossImage;
-}
-
-
-- (NSImage *)OE_selectorImageWithSize:(NSSize)size
-{
-    if(NSEqualSizes(size, NSZeroSize)) return nil;
-
-    NSString *imageKey       = [NSString stringWithFormat:@"OEGridCellSelectionImage(%d)", _lastWindowActive];
-    NSImage  *selectionImage = [self OE_standardImageNamed:imageKey withSize:size];
-    if(selectionImage) return selectionImage;
-
-    BOOL(^drawingBlock)(NSRect) = ^BOOL(NSRect dstRect)
-    {
-        NSGraphicsContext *currentContext = [NSGraphicsContext currentContext];
-        [currentContext saveGraphicsState];
-        [currentContext setShouldAntialias:NO];
-
-        // Draw gradient
-        const CGRect bounds = CGRectMake(0.0, 0.0, dstRect.size.width, dstRect.size.height);
-        NSBezierPath *gradientPath = [NSBezierPath bezierPathWithRoundedRect:CGRectInset(bounds, 2.0, 3.0) xRadius:8.0 yRadius:8.0];
-        [gradientPath appendBezierPath:[NSBezierPath bezierPathWithRoundedRect:CGRectInset(bounds, 8.0, 8.0) xRadius:1.0 yRadius:1.0]];
-        [gradientPath setWindingRule:NSEvenOddWindingRule];
-
-        NSColor *topColor;
-        NSColor *bottomColor;
-
-        if(_lastWindowActive)
-        {
-            topColor = [NSColor colorWithCalibratedRed:0.243 green:0.502 blue:0.871 alpha:1.0];
-            bottomColor = [NSColor colorWithCalibratedRed:0.078 green:0.322 blue:0.667 alpha:1.0];
-        }
-        else
-        {
-            topColor = [NSColor colorWithCalibratedWhite:0.651 alpha:1.0];
-            bottomColor = [NSColor colorWithCalibratedWhite:0.439 alpha:1.0];
-        }
-
-        NSGradient *gradient = [[NSGradient alloc] initWithStartingColor:topColor endingColor:bottomColor];
-        [gradient drawInBezierPath:gradientPath angle:270.0];
-
-        [currentContext restoreGraphicsState];
-        [currentContext saveGraphicsState];
-
-        // Draw selection border
-        OEThemeState currentState = [OEThemeObject themeStateWithWindowActive:YES buttonState:NSMixedState selected:NO enabled:YES focused:_lastWindowActive houseHover:YES modifierMask:YES];
-        NSImage *image = [selectorRingImage imageForState:currentState];
-        [image drawInRect:dstRect fromRect:NSZeroRect operation:NSCompositeSourceOver fraction:1.0];
-
-        [currentContext restoreGraphicsState];
-
-        return YES;
-    };
-
-    selectionImage = [NSImage imageWithSize:size flipped:NO drawingHandler:drawingBlock];
-
-    // Cache the image for later use
-    [self OE_setStandardImage:selectionImage named:imageKey];
-
-    return selectionImage;
 }
 
 @end

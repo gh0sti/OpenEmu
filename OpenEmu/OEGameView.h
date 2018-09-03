@@ -24,24 +24,18 @@
   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#import <Cocoa/Cocoa.h>
-#import <Quartz/Quartz.h>
-#import <OpenGL/OpenGL.h>
-
-#import <Syphon/Syphon.h>
-#import <OpenEmuBase/OpenEmuBase.h>
-#import <OpenEmuSystem/OpenEmuSystem.h>
-
+@import Cocoa;
 #import "OEGameCoreHelper.h"
+@class SyphonServer;
 
 extern NSString * const OEScreenshotAspectRationCorrectionDisabled;
 extern NSString * const OEDefaultVideoFilterKey;
 
 @protocol OEGameViewDelegate;
 
-@interface OEGameView : NSOpenGLView <OEGameCoreDisplayHelper>
+@interface OEGameView : NSOpenGLView
 
-@property (nonatomic, assign) id<OEGameViewDelegate> delegate;
+@property (nonatomic, weak) id<OEGameViewDelegate> delegate;
 
 @property (copy) NSDictionary *filters;
 @property (nonatomic, copy) NSString *filterName;
@@ -53,11 +47,17 @@ extern NSString * const OEDefaultVideoFilterKey;
 /* Returns a screenshot as rendered by the emulator core: native size and no filters */
 - (NSImage *)nativeScreenshot;
 
-
+- (void)setEnableVSync:(BOOL)enable;
+- (void)setAspectSize:(OEIntSize)newAspectSize;
+- (void)setScreenSize:(OEIntSize)newScreenSize withIOSurfaceID:(IOSurfaceID)newSurfaceID;
 - (void)setScreenSize:(OEIntSize)newScreenSize aspectSize:(OEIntSize)newAspectSize withIOSurfaceID:(IOSurfaceID)newSurfaceID;
 
 - (void)showQuickSaveNotification;
 - (void)showScreenShotNotification;
+- (void)showFastForwardNotification:(BOOL)enable;
+- (void)showRewindNotification:(BOOL)enable;
+- (void)showStepForwardNotification;
+- (void)showStepBackwardNotification;
 
 - (NSSize)correctScreenSize:(OEIntSize)screenSize forAspectSize:(OEIntSize)aspectSize returnVertices:(BOOL)flag;
 @end
@@ -72,6 +72,5 @@ extern NSString * const OEDefaultVideoFilterKey;
 
 @protocol OEGameViewDelegate <NSObject>
 - (NSString *)systemIdentifier;
-- (void)gameView:(OEGameView *)gameView setDrawSquarePixels:(BOOL)drawSquarePixels;
 - (void)gameView:(OEGameView *)gameView didReceiveMouseEvent:(OEEvent *)event;
 @end

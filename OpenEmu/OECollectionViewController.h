@@ -24,29 +24,31 @@
   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#import <Cocoa/Cocoa.h>
+@import Cocoa;
 
-#import "OETableView.h"
 #import "OEGridView.h"
-#import "IKImageFlowView.h"
 #import "OEBlankSlateView.h"
 
-#import "OEMainWindowController.h"
 #import "OELibrarySubviewController.h"
 #import "OECollectionViewItemProtocol.h"
 
+@class OETableView;
 @class OELibraryController;
-@class OEHorizontalSplitView;
 @class OEArrayController;
 
 typedef NS_ENUM(NSInteger, OECollectionViewControllerViewTag) {
     OEBlankSlateTag = -1,
     OEGridViewTag   = 0,
-    OEFlowViewTag   = 1,
     OEListViewTag   = 2
 };
 
-@interface OECollectionViewController : NSViewController <OEBlankSlateViewDelegate, NSTableViewDelegate, NSTableViewDataSource, OELibrarySubviewController, OEGridViewDelegate, OEGridViewMenuSource>
+extern NSString * const OELastGridSizeKey;
+extern NSString * const OELastCollectionViewKey;
+
+@interface OECollectionViewController : NSViewController <OEBlankSlateViewDelegate, NSTableViewDelegate, NSTableViewDataSource, OELibrarySubviewController, OEGridViewDelegate, OEGridViewMenuSource, QLPreviewPanelDelegate, QLPreviewPanelDataSource>
+
+/// If YES, the collection view controller is selected and visible to the user. Must be overridden by subclasses.
+@property (nonatomic, readonly) BOOL isSelected;
 
 - (void)reloadData;
 - (void)setNeedsReload;
@@ -63,29 +65,33 @@ typedef NS_ENUM(NSInteger, OECollectionViewControllerViewTag) {
 - (NSArray *)selectedGames;
 @property (nonatomic) NSIndexSet *selectionIndexes;
 
-#pragma mark - View Selection
+#pragma mark - Toolbar
 - (IBAction)switchToGridView:(id)sender;
-- (IBAction)switchToFlowView:(id)sender;
 - (IBAction)switchToListView:(id)sender;
-
-#pragma mark - Toolbar Actions
 - (IBAction)search:(id)sender;
 - (IBAction)changeGridSize:(id)sender;
 
 - (IBAction)deleteSelectedItems:(id)sender;
 
-#pragma mark -
-#pragma mark Context Menu
+#pragma mark - Context Menu
 - (NSMenu*)menuForItemsAtIndexes:(NSIndexSet*)indexes;
+
+#pragma mark - Quick Look
+- (void)refreshPreviewPanelIfNeeded;
+/* subclass these to implement quicklook for a specific collection */
+- (BOOL)acceptsPreviewPanelControl:(QLPreviewPanel *)panel;
+- (NSInteger)numberOfPreviewItemsInPreviewPanel:(QLPreviewPanel *)panel;
+- (id <QLPreviewItem>)previewPanel:(QLPreviewPanel *)panel previewItemAtIndex:(NSInteger)index;
+- (NSInteger)imageBrowserViewIndexForPreviewItem:(id <QLPreviewItem>)item;
 
 #pragma mark -
 - (id <OECollectionViewItemProtocol>)representedObject;
-#pragma mark -
-@property(unsafe_unretained) IBOutlet OELibraryController *libraryController;
+
+@property(nonatomic, readonly) OECollectionViewControllerViewTag selectedViewTag;
+@property(nonatomic, weak) IBOutlet OELibraryController *libraryController;
 @end
 
 @interface OECollectionViewController ()
-@property (assign) IBOutlet IKImageFlowView *coverFlowView;
 @property (assign) IBOutlet OETableView     *listView;
 @property (assign) IBOutlet OEGridView      *gridView;
 - (void)OE_switchToView:(OECollectionViewControllerViewTag)tag;

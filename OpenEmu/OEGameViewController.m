@@ -32,9 +32,6 @@
 #import "OEDBScreenshot.h"
 
 #import "OEGameView.h"
-#import "OECorePickerController.h"
-#import "OEDOGameCoreHelper.h"
-#import "OEDOGameCoreManager.h"
 #import "OEGameCoreManager.h"
 #import "OEThreadGameCoreManager.h"
 #import "OEXPCGameCoreManager.h"
@@ -51,22 +48,21 @@
 #import "OEAudioDeviceManager.h"
 
 #import "OEHUDAlert+DefaultAlertsAdditions.h"
-#import "NSURL+OELibraryAdditions.h"
 #import "NSColor+OEAdditions.h"
 
-#import "OEPreferencesController.h"
 #import "OELibraryDatabase.h"
 
 #import <OpenEmuSystem/OpenEmuSystem.h>
+
+#import "OpenEmu-Swift.h"
 
 NSString *const OEGameVolumeKey = @"volume";
 NSString *const OEGameDefaultVideoFilterKey = @"videoFilter";
 NSString *const OEGameSystemVideoFilterKeyFormat = @"videoFilter.%@";
 NSString *const OEGameCoresInBackgroundKey = @"gameCoreInBackgroundThread";
-NSString *const OEDontShowGameTitleInWindowKey = @"dontShowGameTitleInWindow";
 NSString *const OEAutoSwitchCoreAlertSuppressionKey = @"changeCoreWhenLoadingStateWitoutConfirmation";
 NSString *const OEBackgroundPauseKey = @"backgroundPause";
-NSString *const OEForceCorePicker = @"forceCorePicker";
+NSString *const OEBackgroundControllerPlayKey = @"backgroundControllerPlay";
 NSString *const OEGameViewControllerEmulationWillFinishNotification = @"OEGameViewControllerEmulationWillFinishNotification";
 NSString *const OEGameViewControllerEmulationDidFinishNotification = @"OEGameViewControllerEmulationDidFinishNotification";
 NSString *const OETakeNativeScreenshots = @"takeNativeScreenshots";
@@ -120,7 +116,7 @@ NSString *const OEScreenshotPropertiesKey = @"screenshotProperties";
         NSString *backgroundColorName = [[NSUserDefaults standardUserDefaults] objectForKey:OEGameViewBackgroundColorKey];
         if(backgroundColorName != nil)
         {
-            NSColor *color = OENSColorFromString(backgroundColorName);
+            NSColor *color = [NSColor colorFromString:backgroundColorName];
             [_gameView setBackgroundColor:color];
         }
         
@@ -135,8 +131,6 @@ NSString *const OEScreenshotPropertiesKey = @"screenshotProperties";
 
 - (void)dealloc
 {
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
-
     [_gameView setDelegate:nil];
     _gameView = nil;
 
@@ -164,13 +158,12 @@ NSString *const OEScreenshotPropertiesKey = @"screenshotProperties";
 {
     [super viewWillDisappear];
 
-    [_controlsWindow hide];
+    [_controlsWindow hideAnimated:NO];
     [_controlsWindow setGameWindow:nil];
     [[self OE_rootWindow] removeChildWindow:_controlsWindow];
 }
 
 #pragma mark - Controlling Emulation
-
 - (BOOL)supportsCheats;
 {
     return [[self document] supportsCheats];
@@ -249,6 +242,8 @@ NSString *const OEScreenshotPropertiesKey = @"screenshotProperties";
         else
             [menuItem setState:NSOnState];
     }
+
+
     return YES;
 }
 
@@ -270,7 +265,11 @@ NSString *const OEScreenshotPropertiesKey = @"screenshotProperties";
     [dateFormatter setDateFormat:@"yyyy-MM-dd HH.mm.ss"];
     NSString *timeStamp = [dateFormatter stringFromDate:[NSDate date]];
 
-    NSString *fileName = [NSString stringWithFormat:@"%@ %@.png", [[[[self document] rom] game] displayName], timeStamp];
+    // Replace forward slashes in the game title with underscores because forward slashes aren't allowed in filenames.
+    NSMutableString *displayName = [self.document.rom.game.displayName mutableCopy];
+    [displayName replaceOccurrencesOfString:@"/" withString:@"_" options:0 range:NSMakeRange(0, displayName.length)];
+    
+    NSString *fileName = [NSString stringWithFormat:@"%@ %@.png", displayName, timeStamp];
     NSString *temporaryPath = [NSTemporaryDirectory() stringByAppendingPathComponent:fileName];
     NSURL *temporaryURL = [NSURL fileURLWithPath:temporaryPath];
 
@@ -286,7 +285,7 @@ NSString *const OEScreenshotPropertiesKey = @"screenshotProperties";
     }
 }
 
-#pragma mark - OEGameCoreDisplayHelper methods
+#pragma mark - OEGameCoreOwner methods
 
 - (void)setEnableVSync:(BOOL)enable;
 {
@@ -349,11 +348,6 @@ NSString *const OEScreenshotPropertiesKey = @"screenshotProperties";
 - (void)gameView:(OEGameView *)gameView didReceiveMouseEvent:(OEEvent *)event
 {
     [[self document] gameViewController:self didReceiveMouseEvent:event];
-}
-
-- (void)gameView:(OEGameView *)gameView setDrawSquarePixels:(BOOL)drawSquarePixels
-{
-    [[self document] gameViewController:self setDrawSquarePixels:drawSquarePixels];
 }
 
 @end

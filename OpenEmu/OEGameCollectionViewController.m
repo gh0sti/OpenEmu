@@ -30,10 +30,12 @@
 #import "OESidebarController.h"
 #import "OEHUDAlert.h"
 #import "OEHUDAlert+DefaultAlertsAdditions.h"
-#import "NSURL+OELibraryAdditions.h"
-#import "NSArray+OEAdditions.h"
 #import "OERatingCell.h"
+#import "OEMainWindowController.h"
+#import "OELibraryController.h"
+#import "OELibraryGamesViewController.h"
 
+#import "OELibraryDatabase.h"
 #import "OEDBGame.h"
 #import "OEDBRom.h"
 #import "OEDBSystem.h"
@@ -42,30 +44,117 @@
 #import "OEDBSmartCollection.h"
 #import "OEDBAllGamesCollection.h"
 
+#import "OEROMImporter.h"
+
+#import "OEGameDocument.h"
+
+#import "OEThemeObject.h"
+#import "OEThemeImage.h"
+
+#import "OESearchField.h"
+#import "OETableView.h"
+
+#import "IKImageFlowView.h"
+
 #import "OEDBDataSourceAdditions.h"
+
+#import "OpenEmu-Swift.h"
+
+NSString * const OEGameCollectionViewControllerDidSetSelectionIndexesNotification = @"OEGameCollectionViewControllerDidSetSelectionIndexesNotification";
 
 static NSArray *OE_defaultSortDescriptors;
 
 extern NSString * const OEGameControlsBarCanDeleteSaveStatesKey;
 
+/// Archived URI representations of managed object IDs for selected OEDBGames.
+static NSString * const OESelectedGamesKey = @"OESelectedGamesKey";
+
+@interface OECollectionViewController ()
+@property (readwrite) OECollectionViewControllerViewTag selectedViewTag;
+@end
+
 @interface OEGameCollectionViewController ()
+
 - (NSMenu *)OE_saveStateMenuForGame:(OEDBGame *)game;
 - (NSMenu *)OE_ratingMenuForGames:(NSArray *)games;
 - (NSMenu *)OE_collectionsMenuForGames:(NSArray *)games;
 
 @property (strong) NSDate *listViewSelectionChangeDate;
 @property (readonly) OEArrayController *gamesController;
+
+/// The search term of the currently applied filter.
+@property (copy, nullable) NSString *currentSearchTerm;
+
 @end
 
 @implementation OEGameCollectionViewController
 @synthesize gamesController=gamesController;
 
-- (void)loadView
+- (NSString*)nibName
 {
-    [super loadView];
+    return @"OECollectionViewController";
+}
 
-    // Set up games controller
-    NSManagedObjectContext *context = [[OELibraryDatabase defaultDatabase] mainThreadContext];
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    
+    // Restore grid/list view mode.
+    OECollectionViewControllerViewTag tag = [[NSUserDefaults standardUserDefaults] integerForKey:OELastCollectionViewKey];
+    [self OE_setupToolbarStatesForViewTag:tag];
+    self.selectedViewTag = tag;
+
+    [[self listView] setDraggingSourceOperationMask:NSDragOperationCopy forLocal:NO];
+}
+
+- (void)viewWillAppear
+{
+    [super viewWillAppear];
+    
+    [self OE_setupToolbarStatesForViewTag:self.selectedViewTag];
+    
+    OESearchField *searchField = self.libraryController.toolbar.searchField;
+    searchField.enabled = YES;
+    searchField.stringValue = self.currentSearchTerm ?: @"";
+    
+    [self scrollToSelection];
+}
+
+- (void)viewDidAppear
+{
+    [super viewDidAppear];
+    [[self listView] bind:@"selectionIndexes" toObject:gamesController withKeyPath:@"selectionIndexes" options:@{}];
+}
+
+- (void)viewDidDisappear
+{
+    [super viewDidDisappear];
+    
+    [self.listView unbind:@"selectionIndexes"];
+    
+    // We don't want to clear the search filter if the view is disappearing because of gameplay.
+    OEGameDocument *gameDocument = (OEGameDocument *)[[NSDocumentController sharedDocumentController] currentDocument];
+    const BOOL playingGame = gameDocument != nil;
+    
+    if(!playingGame)
+    {
+        // Clear any previously applied search filter.
+        gamesController.filterPredicate = nil;
+        self.currentSearchTerm = nil;
+        [self.listView reloadData];
+        [self.gridView reloadData];
+    }
+}
+
+- (void)setLibraryController:(OELibraryController *)libraryController
+{
+    [super setLibraryController:libraryController];
+    [self _setupGamesController];
+}
+
+- (void)_setupGamesController {
+    OELibraryDatabase *database = [[self libraryController] database];
+    NSManagedObjectContext *context = [database mainThreadContext];
 
     OE_defaultSortDescriptors = @[[NSSortDescriptor sortDescriptorWithKey:@"cleanDisplayName" ascending:YES selector:@selector(caseInsensitiveCompare:)]];
 
@@ -79,10 +168,6 @@ extern NSString * const OEGameControlsBarCanDeleteSaveStatesKey;
     [gamesController setSortDescriptors:OE_defaultSortDescriptors];
     [gamesController setFetchPredicate:[NSPredicate predicateWithValue:NO]];
     [gamesController setAvoidsEmptySelection:NO];
-
-    [[self listView] bind:@"selectionIndexes" toObject:gamesController withKeyPath:@"selectionIndexes" options:@{}];
-
-    [[self listView] setDraggingSourceOperationMask:NSDragOperationCopy forLocal:NO];
 }
 
 - (void)fetchItems
@@ -95,13 +180,12 @@ extern NSString * const OEGameControlsBarCanDeleteSaveStatesKey;
     [gamesController setFetchPredicate:pred];
     [gamesController setLimit:[representedObject fetchLimit]];
     [gamesController setFetchSortDescriptors:[representedObject fetchSortDescriptors]];
-    __block BOOL ok;
 
-    ok = [gamesController fetchWithRequest:nil merge:NO error:nil];
-
-    if(!ok)
+    NSError *error = nil;
+    if(![gamesController fetchWithRequest:nil merge:NO error:&error])
     {
-        NSLog(@"Error while fetching");
+        NSLog(@"Error while fetching: %@", gamesController);
+        NSLog(@"%@", [error localizedDescription]);
         return;
     }
 }
@@ -118,16 +202,22 @@ extern NSString * const OEGameControlsBarCanDeleteSaveStatesKey;
 
 - (void)dealloc
 {
-    [[self listView] unbind:@"selectionIndexes"];
     gamesController = nil;
 }
+
 #pragma mark - Selection
+
+- (BOOL)isSelected
+{
+    return [self.libraryController.currentSubviewController isKindOfClass:[OELibraryGamesViewController class]];
+}
+
 - (NSArray *)selectedGames
 {
     return [gamesController selectedObjects];
 }
 
-- (NSIndexSet *)selectedIndexes
+- (NSIndexSet *)selectionIndexes
 {
     return [gamesController selectionIndexes];
 }
@@ -137,7 +227,40 @@ extern NSString * const OEGameControlsBarCanDeleteSaveStatesKey;
     [gamesController setSelectionIndexes:selectionIndexes];
 
     [[self gridView] setSelectionIndexes:selectionIndexes byExtendingSelection:NO];
+    
+    // Save selected games to user defaults.
+    NSMutableArray <NSData *> *archivableRepresentations = [NSMutableArray array];
+    for (OEDBGame *selectedGame in self.selectedGames) {
+        NSManagedObjectID *objectID = selectedGame.permanentID;
+        NSData *representation = [NSKeyedArchiver archivedDataWithRootObject:objectID.URIRepresentation];
+        [archivableRepresentations addObject:representation];
+    }
+    
+    [[NSUserDefaults standardUserDefaults] setObject:archivableRepresentations forKey:OESelectedGamesKey];
+    
+    [NSNotificationCenter.defaultCenter postNotificationName:OEGameCollectionViewControllerDidSetSelectionIndexesNotification object:self];
 }
+
+- (void)scrollToSelection
+{
+    if (self.selectionIndexes.count > 0) {
+        
+        NSRect itemFrame = [self.gridView itemFrameAtIndex:self.selectionIndexes.firstIndex];
+        [self.gridView scrollRectToVisible:itemFrame];
+        
+        [self.listView scrollRowToVisible:self.selectionIndexes.firstIndex];
+    }
+}
+
+#pragma mark - View Selection
+
+- (void)OE_switchToView:(OECollectionViewControllerViewTag)tag
+{
+    [super OE_switchToView:tag];
+    
+    [[NSUserDefaults standardUserDefaults] setInteger:self.selectedViewTag forKey:OELastCollectionViewKey];
+}
+
 #pragma mark -
 - (BOOL)shouldShowBlankSlate
 {
@@ -151,24 +274,72 @@ extern NSString * const OEGameControlsBarCanDeleteSaveStatesKey;
 - (void)setRepresentedObject:(id)representedObject
 {
     [super setRepresentedObject:representedObject];
-
-    [[[self libraryController] toolbarSearchField] setSearchMenuTemplate:nil];
-
+    
+    self.libraryController.toolbar.searchField.searchMenuTemplate = nil;
+    
+    // Restore search field text.
+    NSString *newSearchFieldStringValue = self.currentSearchTerm ?: @"";
+    self.libraryController.toolbar.searchField.stringValue = newSearchFieldStringValue;
+    
     NSAssert([representedObject conformsToProtocol:@protocol(OEGameCollectionViewItemProtocol)], @"");
 
-    [[[self listView] tableColumnWithIdentifier:@"listViewConsoleName"] setHidden:![representedObject shouldShowSystemColumnInListView]];
+    [self.listView tableColumnWithIdentifier:@"listViewConsoleName"].hidden = ![representedObject shouldShowSystemColumnInListView];
     [self reloadData];
+    
+    // Restore game selection.
+    NSManagedObjectContext *context = self.libraryController.database.mainThreadContext;
+    NSPersistentStoreCoordinator *persistentStoreCoordinator = context.persistentStoreCoordinator;
+    NSMutableIndexSet *gameIndexesToSelect = [NSMutableIndexSet indexSet];
+    for (NSData *data in [[NSUserDefaults standardUserDefaults] objectForKey:OESelectedGamesKey]) {
+        
+        NSURL *representation = [NSKeyedUnarchiver unarchiveObjectWithData:data];
+        
+        if (!representation) {
+            continue;
+        }
+        
+        NSManagedObjectID *objectID = [persistentStoreCoordinator managedObjectIDForURIRepresentation:representation];
+        
+        if (!objectID) {
+            continue;
+        }
+        
+        OEDBGame *game = [context objectWithID:objectID];
+        
+        NSUInteger index = [self.gamesController.arrangedObjects indexOfObject:game];
+        
+        if (index == NSNotFound) {
+            continue;
+        }
+        
+        [gameIndexesToSelect addIndex:index];
+    }
+    
+    self.selectionIndexes = gameIndexesToSelect;
+    
+    [self scrollToSelection];
 }
 
 - (id <OEGameCollectionViewItemProtocol>)representedObject
 {
     return (id <OEGameCollectionViewItemProtocol>) [super representedObject];
 }
+
 #pragma mark - UI Actions
+
+- (BOOL)validateMenuItem:(NSMenuItem *)item
+{
+    SEL action = [item action];
+    if (action == @selector(showInFinder:))
+        return [[self selectedGames] count] > 0;
+    return [super validateMenuItem:item];
+}
+
 - (void)search:(id)sender
 {
-    NSString *searchTerm = [sender stringValue];
-    NSArray *tokens = [searchTerm componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    self.currentSearchTerm = [sender stringValue];
+    
+    NSArray *tokens = [self.currentSearchTerm componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
 
     NSMutableArray *predarray = [NSMutableArray array];
     for(NSString *token in tokens)
@@ -181,14 +352,13 @@ extern NSString * const OEGameControlsBarCanDeleteSaveStatesKey;
     }
     NSPredicate *pred = [NSCompoundPredicate andPredicateWithSubpredicates:predarray];
 
-    [gamesController setFilterPredicate:pred];
+    gamesController.filterPredicate = pred;
 
-    [[self listView] reloadData];
-    [[self coverFlowView] performSelectorOnMainThread:@selector(reloadData) withObject:nil waitUntilDone:NO];
-    [[self gridView] reloadData];
+    [self.listView reloadData];
+    [self.gridView reloadData];
 }
 
-- (IBAction)showSelectedGamesInFinder:(id)sender
+- (IBAction)showInFinder:(id)sender
 {
     NSArray *selectedGames = [self selectedGames];
     NSArray *urls = [selectedGames valueForKeyPath:@"defaultROM.URL.absoluteURL"];
@@ -258,13 +428,14 @@ extern NSString * const OEGameControlsBarCanDeleteSaveStatesKey;
             BOOL deleteFiles = NO;
             if(romsAreInRomsFolder)
             {
-                NSUInteger alertReturn = [[OEHUDAlert removeGameFilesFromLibraryAlert:multipleGames] runModal];
-                deleteFiles = (alertReturn == NSAlertFirstButtonReturn);
+                //NSUInteger alertReturn = [[OEHUDAlert removeGameFilesFromLibraryAlert:multipleGames] runModal];
+                //deleteFiles = (alertReturn == NSAlertFirstButtonReturn);
+                deleteFiles = YES;
             }
 
             DLog(@"deleteFiles: %d", deleteFiles);
             [selectedGames enumerateObjectsUsingBlock:^(OEDBGame *game, NSUInteger idx, BOOL *stopGames) {
-                [game deleteByMovingFile:deleteFiles keepSaveStates:YES];
+                [game deleteByMovingFile:deleteFiles keepSaveStates:NO];
             }];
 
             NSManagedObjectContext *context = [[selectedGames lastObject] managedObjectContext];
@@ -289,17 +460,6 @@ extern NSString * const OEGameControlsBarCanDeleteSaveStatesKey;
     }
 }
 
-- (void)makeNewCollectionWithSelectedGames:(id)sender
-{
-    OECoreDataMainThreadAssertion();
-
-    NSArray *selectedGames = [self selectedGames];
-    OEDBCollection *collection = [[[self libraryController] sidebarController] addCollection:NO];
-    [collection setGames:[NSSet setWithArray:selectedGames]];
-    [collection save];
-    [self setNeedsReload];
-}
-
 - (void)addSelectedGamesToCollection:(id)sender
 {
     OECoreDataMainThreadAssertion();
@@ -321,7 +481,7 @@ extern NSString * const OEGameControlsBarCanDeleteSaveStatesKey;
 {
     [[self selectedGames] makeObjectsPerformSelector:@selector(requestCoverDownload)];
     [(OEDBGame*)[[self selectedGames] lastObject] save];
-    [self reloadDataIndexes:[self selectedIndexes]];
+    [self reloadDataIndexes:[self selectionIndexes]];
 }
 
 
@@ -329,7 +489,7 @@ extern NSString * const OEGameControlsBarCanDeleteSaveStatesKey;
 {
     [[self selectedGames] makeObjectsPerformSelector:@selector(cancelCoverDownload)];
     [(OEDBGame*)[[self selectedGames] lastObject] save];
-    [self reloadDataIndexes:[self selectedIndexes]];
+    [self reloadDataIndexes:[self selectionIndexes]];
 }
 
 - (void)addCoverArtFromFile:(id)sender
@@ -351,7 +511,7 @@ extern NSString * const OEGameControlsBarCanDeleteSaveStatesKey;
         NSManagedObjectContext *context = [[selectedGames lastObject] managedObjectContext];
         [context save:nil];
 
-        [self reloadDataIndexes:[self selectedIndexes]];
+        [self reloadDataIndexes:[self selectionIndexes]];
     }];
 }
 
@@ -419,7 +579,7 @@ extern NSString * const OEGameControlsBarCanDeleteSaveStatesKey;
                 if(error != nil)
                 {
                     OEAlertCompletionHandler originalCompletionHandler = [alert callbackHandler];
-                    [alert setCallbackHandler:^(OEHUDAlert *alert, NSUInteger result){
+                    [alert setCallbackHandler:^(OEHUDAlert *alert, NSModalResponse result){
                         NSString *messageText = [error localizedDescription];
                         OEHUDAlert *errorAlert = [OEHUDAlert alertWithMessageText:messageText defaultButton:@"OK" alternateButton:@""];
                         [errorAlert setTitle:@"Consolidating files failed."];
@@ -466,7 +626,7 @@ extern NSString * const OEGameControlsBarCanDeleteSaveStatesKey;
     if([indexes count] == 1)
     {
         NSInteger index = [indexes lastIndex];
-        [menu addItemWithTitle:NSLocalizedString(@"Play Game", @"") action:@selector(startGame:) keyEquivalent:@""];
+        [menu addItemWithTitle:NSLocalizedString(@"Play Game", @"") action:@selector(startSelectedGame:) keyEquivalent:@""];
         OEDBGame  *game = [[gamesController arrangedObjects] objectAtIndex:index];
 
         // Create Save Game Menu
@@ -483,7 +643,7 @@ extern NSString * const OEGameControlsBarCanDeleteSaveStatesKey;
 
         if(hasLocalFiles)
         {
-            [menu addItemWithTitle:NSLocalizedString(@"Show in Finder", @"") action:@selector(showSelectedGamesInFinder:) keyEquivalent:@""];
+            [menu addItemWithTitle:NSLocalizedString(@"Show in Finder", @"") action:@selector(showInFinder:) keyEquivalent:@""];
             if(hasRemoteFiles)
                 [menu addItemWithTitle:NSLocalizedString(@"Trash downloaded Files", @"") action:@selector(trashDownloadedFiles:) keyEquivalent:@""];
         }
@@ -494,13 +654,13 @@ extern NSString * const OEGameControlsBarCanDeleteSaveStatesKey;
         if([[game status] isEqualTo:@(OEDBGameStatusProcessing)])
             [menu addItemWithTitle:NSLocalizedString(@"Cancel Cover Art Download", @"") action:@selector(cancelCoverArtDownload:) keyEquivalent:@""];
 
-        [menu addItemWithTitle:NSLocalizedString(@"Add Cover Art From File…", @"") action:@selector(addCoverArtFromFile:) keyEquivalent:@""];
+        [menu addItemWithTitle:NSLocalizedString(@"Add Cover Art from File…", @"") action:@selector(addCoverArtFromFile:) keyEquivalent:@""];
         [menu addItemWithTitle:NSLocalizedString(@"Consolidate Files…", @"") action:@selector(consolidateFiles:) keyEquivalent:@""];
 
         //[menu addItemWithTitle:@"Add Save File To Game…" action:@selector(addSaveStateFromFile:) keyEquivalent:@""];
         [menu addItem:[NSMenuItem separatorItem]];
         // Create Add to collection menu
-        NSMenuItem *collectionMenuItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Add To Collection", @"") action:NULL keyEquivalent:@""];
+        NSMenuItem *collectionMenuItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Add to Collection", @"") action:NULL keyEquivalent:@""];
         [collectionMenuItem setSubmenu:[self OE_collectionsMenuForGames:games]];
         [menu addItem:collectionMenuItem];
         [menu addItem:[NSMenuItem separatorItem]];
@@ -511,7 +671,7 @@ extern NSString * const OEGameControlsBarCanDeleteSaveStatesKey;
     {
         if([[NSUserDefaults standardUserDefaults] boolForKey:OEForcePopoutGameWindowKey])
         {
-            [menu addItemWithTitle:NSLocalizedString(@"Play Games (Caution)", @"") action:@selector(startGame:) keyEquivalent:@""];
+            [menu addItemWithTitle:NSLocalizedString(@"Play Games (Caution)", @"") action:@selector(startSelectedGame:) keyEquivalent:@""];
         }
 
         // Create Rating Item
@@ -522,19 +682,19 @@ extern NSString * const OEGameControlsBarCanDeleteSaveStatesKey;
         
         if(hasLocalFiles)
         {
-            [menu addItemWithTitle:NSLocalizedString(@"Show in Finder", @"") action:@selector(showSelectedGamesInFinder:) keyEquivalent:@""];
+            [menu addItemWithTitle:NSLocalizedString(@"Show in Finder", @"") action:@selector(showInFinder:) keyEquivalent:@""];
             if(hasRemoteFiles)
                 [menu addItemWithTitle:NSLocalizedString(@"Trash downloaded Files", @"") action:@selector(trashDownloadedFiles:) keyEquivalent:@""];
         }
         [menu addItem:[NSMenuItem separatorItem]];
 
         [menu addItemWithTitle:NSLocalizedString(@"Download Cover Art", @"") action:@selector(downloadCoverArt:) keyEquivalent:@""];
-        [menu addItemWithTitle:NSLocalizedString(@"Add Cover Art From File…", @"") action:@selector(addCoverArtFromFile:) keyEquivalent:@""];
+        [menu addItemWithTitle:NSLocalizedString(@"Add Cover Art from File…", @"") action:@selector(addCoverArtFromFile:) keyEquivalent:@""];
         [menu addItemWithTitle:NSLocalizedString(@"Consolidate Files…", @"") action:@selector(consolidateFiles:) keyEquivalent:@""];
 
         [menu addItem:[NSMenuItem separatorItem]];
         // Create Add to collection menu
-        NSMenuItem *collectionMenuItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Add To Collection", @"") action:NULL keyEquivalent:@""];
+        NSMenuItem *collectionMenuItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Add to Collection", @"") action:NULL keyEquivalent:@""];
         [collectionMenuItem setSubmenu:[self OE_collectionsMenuForGames:games]];
         [menu addItem:collectionMenuItem];
 
@@ -661,7 +821,7 @@ extern NSString * const OEGameControlsBarCanDeleteSaveStatesKey;
         [game setRating:[sender representedObject]];
     }
     
-    [self reloadDataIndexes:[self selectedIndexes]];
+    [self reloadDataIndexes:[self selectionIndexes]];
 }
 
 #pragma mark - GridView DataSource
@@ -682,7 +842,7 @@ extern NSString * const OEGameControlsBarCanDeleteSaveStatesKey;
 #pragma mark - GridView Delegate
 - (void)imageBrowser:(IKImageBrowserView *)aBrowser cellWasDoubleClickedAtIndex:(NSUInteger)index
 {
-    [[self libraryController] startGame:self];
+    [[self libraryController] startSelectedGame:self];
 }
 
 - (void)gridView:(OEGridView*)gridView requestsDownloadRomForItemAtIndex:(NSUInteger)index
@@ -744,7 +904,9 @@ extern NSString * const OEGameControlsBarCanDeleteSaveStatesKey;
 - (id)tableView:(NSTableView *)tableView objectValueForTableColumn:(NSTableColumn *)tableColumn row:(NSInteger)rowIndex
 {
     if(tableView != [self listView]) return nil;
-
+    
+    if(rowIndex >= [[gamesController arrangedObjects] count]) return nil;
+    
     NSObject<OEListViewDataSourceItem> *item = [[gamesController arrangedObjects] objectAtIndex:rowIndex];
     NSString *columnId                       = [tableColumn identifier];
     id result                                = nil;
@@ -811,18 +973,6 @@ extern NSString * const OEGameControlsBarCanDeleteSaveStatesKey;
 
     [gamesController setSortDescriptors:[[self listView] sortDescriptors]];
     [[self listView] reloadData];
-
-    // If we send -reloadData to `coverFlowView`, it changes the selected index to an index that doesn't match
-    // either the previous selected index or the new selected index as defined by `gamesController`. We need to
-    // remember the actual new selected index, wait for `coverFlowView` to reload its data and then restore the
-    // correct selection.
-    if([[gamesController selectionIndexes] count] == 1)
-    {
-        NSInteger selectedRow = [[gamesController selectionIndexes] firstIndex];
-        [[self coverFlowView] reloadData];
-        [[self coverFlowView] setSelectedIndex:(int)selectedRow];
-    }
-    else [[self coverFlowView] reloadData];
 }
 
 #pragma mark - TableView Drag and Drop
@@ -902,7 +1052,6 @@ extern NSString * const OEGameControlsBarCanDeleteSaveStatesKey;
 
     _listViewSelectionChangeDate = [NSDate date];
 
-    if([[[self listView] selectedRowIndexes] count] == 1) [[self coverFlowView] setSelectedIndex:(int)[[[self listView] selectedRowIndexes] firstIndex]];
     [self setSelectionIndexes:[[self listView] selectedRowIndexes]];
 }
 
@@ -958,7 +1107,7 @@ extern NSString * const OEGameControlsBarCanDeleteSaveStatesKey;
 
 - (void)imageFlow:(IKImageFlowView *)sender cellWasDoubleClickedAtIndex:(NSInteger)index
 {
-    [[self libraryController] startGame:self];
+    [[self libraryController] startSelectedGame:self];
 }
 
 - (void)imageFlow:(IKImageFlowView *)sender didSelectItemAtIndex:(NSInteger)index

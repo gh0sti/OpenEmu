@@ -24,12 +24,11 @@
   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#import <Cocoa/Cocoa.h>
-#import <ImageKit/ImageKit.h>
+@import Cocoa;
+@import Quartz;
 
 extern NSSize const defaultGridSize;
 extern NSString * const OEImageBrowserGroupSubtitleKey;
-extern NSString *const OECoverGridViewGlossDisabledKey;
 
 typedef enum
 {
@@ -57,4 +56,6 @@ typedef enum
 
 @protocol OEGridViewDelegate <NSObject>
 - (void)gridView:(OEGridView*)gridView setTitle:(NSString*)title forItemAtIndex:(NSInteger)index;
+@optional
+- (BOOL)toggleQuickLook;
 @end

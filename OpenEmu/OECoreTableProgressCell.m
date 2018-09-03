@@ -25,8 +25,11 @@
  */
 
 #import "OECoreTableProgressCell.h"
-#import "NSImage+OEDrawingAdditions.h"
+#import "OETheme.h"
 #import "OEThemeImage.h"
+
+#import "OpenEmu-Swift.h"
+
 @implementation OECoreTableProgressCell
 
 - (id)init 

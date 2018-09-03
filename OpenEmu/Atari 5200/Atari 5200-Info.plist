@@ -25,7 +25,7 @@
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright © 2012 OpenEmu Team. All rights reserved.</string>
 	<key>NSPrincipalClass</key>
-	<string>OESystemController</string>
+	<string>OE5200SystemController</string>
 	<key>OEControlListKey</key>
 	<array>
 		<array>
@@ -75,7 +75,7 @@
 			</dict>
 			<dict>
 				<key>OEControlListKeyLabelKey</key>
-				<string>Pause</string>
+				<string>Console Pause</string>
 				<key>OEControlListKeyNameKey</key>
 				<string>OE5200ButtonPause</string>
 			</dict>
@@ -83,7 +83,7 @@
 		<array>
 			<dict>
 				<key>OEControlListKeyLabelKey</key>
-				<string>Reset</string>
+				<string>Console Reset</string>
 				<key>OEControlListKeyNameKey</key>
 				<string>OE5200ButtonReset</string>
 			</dict>

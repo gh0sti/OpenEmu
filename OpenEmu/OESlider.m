@@ -25,7 +25,11 @@
  */
 
 #import "OESlider.h"
-#import "NSImage+OEDrawingAdditions.h"
+#import "OESliderCell.h"
+#import "OETheme.h"
+#import "OEThemeImage.h"
+
+#import "OpenEmu-Swift.h"
 
 @interface OESlider ()
 {
@@ -296,6 +300,7 @@
     }
     return self;
 }
+
 - (void)updateHintImages
 {
     BOOL enabled = [self isEnabled];
@@ -325,7 +330,7 @@
 - (void)drawRect:(NSRect)dirtyRect
 {
     [super drawRect:dirtyRect];
-    [self performSelectorInBackground:@selector(updateHintImages) withObject:nil];
+    [self updateHintImages];
 }
 
 @end

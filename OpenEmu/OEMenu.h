@@ -24,7 +24,7 @@
   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#import <Cocoa/Cocoa.h>
+@import Cocoa;
 
 @class OEPopUpButton;
 
@@ -78,6 +78,7 @@ static inline NSRect OENSInsetRectWithEdgeInsets(NSRect rect, NSEdgeInsets inset
 
 + (void)openMenuForPopUpButton:(OEPopUpButton *)button withEvent:(NSEvent *)event options:(NSDictionary *)options;
 + (void)openMenu:(NSMenu *)menu withEvent:(NSEvent *)event forView:(NSView *)view options:(NSDictionary *)options;
++ (NSSize)sizeOfMenu:(NSMenu *)menu forView:(NSView *)view options:(NSDictionary *)options;
 
 - (void)cancelTracking;
 - (void)cancelTrackingWithoutAnimation;

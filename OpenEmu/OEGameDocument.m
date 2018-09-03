@@ -26,17 +26,14 @@
 
 #import "OEGameDocument.h"
 
-#import "OEApplicationDelegate.h"
 #import "OEAudioDeviceManager.h"
 #import "OEBackgroundColorView.h"
-#import "OEBIOSFile.h"
-#import "OECorePickerController.h"
 #import "OECorePlugin.h"
 #import "OECoreUpdater.h"
 #import "OEDBRom.h"
 #import "OEDBGame.h"
 #import "OEDBSaveState.h"
-#import "OEDOGameCoreManager.h"
+#import "OEDBSystem.h"
 #import "OEGameCoreManager.h"
 #import "OEGameView.h"
 #import "OEGameViewController.h"
@@ -44,19 +41,19 @@
 #import "OEHUDWindow.h"
 #import "OELibraryDatabase.h"
 #import "OEPopoutGameWindowController.h"
-#import "OEPreferencesController.h"
 #import "OESystemPlugin.h"
 #import "OEThreadGameCoreManager.h"
 #import "OEXPCGameCoreManager.h"
-#import "NSURL+OELibraryAdditions.h"
-#import "NSView+FadeImage.h"
 #import "OEDownload.h"
+#import "OEROMImporter.h"
 
 // using the main window controller here is not very nice, but meh
 #import "OEMainWindowController.h"
 
 #import <objc/message.h>
 #import <IOKit/pwr_mgt/IOPMLib.h>
+
+#import "OpenEmu-Swift.h"
 
 NSString *const OEGameCoreManagerModePreferenceKey = @"OEGameCoreManagerModePreference";
 NSString *const OEGameDocumentErrorDomain = @"OEGameDocumentErrorDomain";
@@ -78,10 +75,9 @@ typedef enum : NSUInteger
     OEEmulationStatusTerminating,
 } OEEmulationStatus;
 
-@interface OEGameDocument ()
+@interface OEGameDocument () <OEGameCoreOwner, OESystemBindingsObserver>
 {
     OEGameCoreManager  *_gameCoreManager;
-    OESystemController *_gameSystemController;
 
     IOPMAssertionID     _displaySleepAssertionID;
 
@@ -150,7 +146,7 @@ typedef enum : NSUInteger
 
 - (NSString *)systemIdentifier;
 {
-    return [_gameSystemController systemIdentifier];
+    return [_systemPlugin systemIdentifier];
 }
 
 - (BOOL)OE_setupDocumentWithSaveState:(OEDBSaveState *)saveState error:(NSError **)outError
@@ -197,7 +193,7 @@ typedef enum : NSUInteger
                     }];
 
                     [download setCompletionHandler:^(NSURL *dst, NSError *err) {
-                        destination = dst,
+                        destination = dst;
                         error = err;
                         [alert closeWithResult:NSAlertSecondButtonReturn];
                     }];
@@ -267,7 +263,6 @@ typedef enum : NSUInteger
     _romFileURL = fileURL;
     _corePlugin = core;
     _systemPlugin = [[[[self rom] game] system] plugin];
-    _gameSystemController = [_systemPlugin controller];
 
     if(_corePlugin == nil)
         _corePlugin = [self OE_coreForSystem:_systemPlugin error:outError];
@@ -280,7 +275,7 @@ typedef enum : NSUInteger
         {
             if(error == nil && plugin != nil)
             {
-                _corePlugin = plugin;
+                self->_corePlugin = plugin;
             }
             else if(error == nil)
             {
@@ -300,21 +295,19 @@ typedef enum : NSUInteger
     NSAssert(core != [_gameCoreManager plugin], @"Do not attempt to run a new core using the same plug-in as the current one.");
 
     _emulationStatus = OEEmulationStatusNotSetup;
-    [_gameCoreManager stopEmulationWithCompletionHandler:
-     ^{
-         _gameCoreManager = [self _newGameCoreManagerWithCorePlugin:core];
-         [self setupGameWithCompletionHandler:
-          ^(BOOL success, NSError *error)
-          {
-              if(!success)
-              {
-                  [self presentError:error];
-                  return;
-              }
+    [_gameCoreManager stopEmulationWithCompletionHandler:^{
+        [[[OEBindingsController defaultBindingsController] systemBindingsForSystemController:self->_systemPlugin.controller] removeBindingsObserver:self];
 
-              completionHandler();
-          }];
-     }];
+        self->_gameCoreManager = [self _newGameCoreManagerWithCorePlugin:core];
+        [self setupGameWithCompletionHandler:^(BOOL success, NSError *error) {
+            if(!success) {
+                [self presentError:error];
+                return;
+            }
+
+            completionHandler();
+        }];
+    }];
 }
 
 - (OEGameCoreManager *)_newGameCoreManagerWithCorePlugin:(OECorePlugin *)corePlugin
@@ -325,18 +318,17 @@ typedef enum : NSUInteger
     NSString *managerClassName = [[NSUserDefaults standardUserDefaults] objectForKey:OEGameCoreManagerModePreferenceKey];
 
     Class managerClass = NSClassFromString(managerClassName);
-    if(managerClass != [OEThreadGameCoreManager class] && managerClass != [OEDOGameCoreManager class])
+    if(managerClass != [OEThreadGameCoreManager class])
         managerClass = [OEXPCGameCoreManager class];
 
     _corePlugin = corePlugin;
-    [[NSUserDefaults standardUserDefaults] setValue:[_corePlugin bundleIdentifier] forKey:UDSystemCoreMappingKeyForSystemIdentifier([self systemIdentifier])];
 
     NSString *path = [[self romFileURL] path];
      // if file is in an archive append :entryIndex to path, so the core manager can figure out which entry to load
     if([[self rom] archiveFileIndex])
         path = [path stringByAppendingFormat:@":%d",[[[self rom] archiveFileIndex] intValue]];
 
-    return [[managerClass alloc] initWithROMPath:path romCRC32:[[self rom] crc32] romMD5:[[self rom] md5] romHeader:[[self rom] header] romSerial:[[self rom] serial] systemRegion:[[OELocalizationHelper sharedHelper] regionName] corePlugin:_corePlugin systemController:_gameSystemController displayHelper:_gameViewController];
+    return [[managerClass alloc] initWithROMPath:path romCRC32:[[self rom] crc32] romMD5:[[self rom] md5] romHeader:[[self rom] header] romSerial:[[self rom] serial] systemRegion:[[OELocalizationHelper sharedHelper] regionName] corePlugin:_corePlugin systemPlugin:_systemPlugin gameCoreOwner:self];
 }
 
 - (OECorePlugin *)OE_coreForSystem:(OESystemPlugin *)system error:(NSError **)outError
@@ -359,26 +351,17 @@ typedef enum : NSUInteger
     else
     {
         NSUserDefaults *standardUserDefaults = [NSUserDefaults standardUserDefaults];
-        BOOL forceCorePicker = [standardUserDefaults boolForKey:OEForceCorePicker];
         NSString *coreIdentifier = [standardUserDefaults valueForKey:UDSystemCoreMappingKeyForSystemIdentifier([self systemIdentifier])];
         chosenCore = [OECorePlugin corePluginWithBundleIdentifier:coreIdentifier];
-        if(chosenCore == nil && !forceCorePicker)
+        if(chosenCore == nil)
         {
             validPlugins = [validPlugins sortedArrayUsingComparator:
                             ^ NSComparisonResult (id obj1, id obj2)
                             {
-                                return [[obj1 displayName] compare:[obj2 displayName]];
+                                return [[obj1 displayName] caseInsensitiveCompare:[obj2 displayName]];
                             }];
 
             chosenCore = [validPlugins objectAtIndex:0];
-            [standardUserDefaults setValue:[chosenCore bundleIdentifier] forKey:UDSystemCoreMappingKeyForSystemIdentifier([self systemIdentifier])];
-        }
-
-        if(forceCorePicker)
-        {
-            OECorePickerController *c = [[OECorePickerController alloc] initWithCoreList:validPlugins];
-            if([[NSApplication sharedApplication] runModalForWindow:[c window]] == 1)
-                chosenCore = [c selectedCore];
         }
     }
 
@@ -628,7 +611,9 @@ typedef enum : NSUInteger
                 }
                 else
                 {
-                    [[NSDocumentController sharedDocumentController] openDocumentWithContentsOfURL:[rom URL] display:NO completionHandler:nil];
+                    [[NSDocumentController sharedDocumentController] openDocumentWithContentsOfURL:[rom URL] display:NO completionHandler:^(NSDocument * _Nullable document, BOOL documentWasAlreadyOpen, NSError * _Nullable error) {
+                        ;
+                    }];
                 }
             }
         };
@@ -676,6 +661,7 @@ typedef enum : NSUInteger
         [menuItem setTitle:NSLocalizedString(@"Pause Emulation", @"")];
         return _emulationStatus == OEEmulationStatusPlaying;
     }
+
     return YES;
 }
 
@@ -695,48 +681,44 @@ typedef enum : NSUInteger
         return;
     }
 
-    [_gameCoreManager loadROMWithCompletionHandler:
-     ^(id systemClient)
-     {
-         [_gameCoreManager setupEmulationWithCompletionHandler:
-          ^(IOSurfaceID surfaceID, OEIntSize screenSize, OEIntSize aspectSize)
-          {
-              NSLog(@"SETUP DONE.");
-              [_gameViewController setScreenSize:screenSize aspectSize:aspectSize withIOSurfaceID:surfaceID];
+    [_gameCoreManager loadROMWithCompletionHandler:^{
+        [self->_gameCoreManager setupEmulationWithCompletionHandler:^(IOSurfaceID surfaceID, OEIntSize screenSize, OEIntSize aspectSize) {
+            NSLog(@"SETUP DONE.");
+            [self->_gameViewController setScreenSize:screenSize aspectSize:aspectSize withIOSurfaceID:surfaceID];
 
-              _emulationStatus = OEEmulationStatusSetup;
+            self->_emulationStatus = OEEmulationStatusSetup;
 
-              // TODO: #567 and #568 need to be fixed first
-              //[self OE_addDeviceNotificationObservers];
+            // TODO: #567 and #568 need to be fixed first
+            //[self OE_addDeviceNotificationObservers];
 
-              _gameSystemResponder = [_gameSystemController newGameSystemResponder];
-              [_gameSystemResponder setClient:systemClient];
-              [_gameSystemResponder setGlobalEventsHandler:self];
+            [self disableOSSleep];
+            [[self rom] incrementPlayCount];
+            [[self rom] markAsPlayedNow];
+            self->_lastPlayStartDate = [NSDate date];
 
-              [self disableOSSleep];
-              [[self rom] incrementPlayCount];
-              [[self rom] markAsPlayedNow];
-              _lastPlayStartDate = [NSDate date];
+            if(self->_saveStateForGameStart)
+            {
+                [self OE_loadState:self->_saveStateForGameStart];
+                self->_saveStateForGameStart = nil;
+            }
 
-              if(_saveStateForGameStart)
-              {
-                  [self OE_loadState:_saveStateForGameStart];
-                  _saveStateForGameStart = nil;
-              }
+            // set initial volume
+            [self setVolume:[self volume] asDefault:NO];
 
-              // set initial volume
-              [self setVolume:[self volume] asDefault:NO];
+            [[[OEBindingsController defaultBindingsController] systemBindingsForSystemController:self->_systemPlugin.controller] addBindingsObserver:self];
 
-              handler(YES, nil);
-          }];
-     } errorHandler:
-     ^(NSError *error)
-     {
-         _gameCoreManager = nil;
-         [self close];
+            self->_gameCoreManager.handleEvents = self->_handleEvents;
+            self->_gameCoreManager.handleKeyboardEvents = self->_handleKeyboardEvents;
 
-         handler(NO, error);
-     }];
+            handler(YES, nil);
+        }];
+    } errorHandler:^(NSError *error) {
+        [[[OEBindingsController defaultBindingsController] systemBindingsForSystemController:self->_systemPlugin.controller] removeBindingsObserver:self];
+        self->_gameCoreManager = nil;
+        [self close];
+
+        handler(NO, error);
+    }];
 }
 
 - (void)OE_startEmulation
@@ -747,7 +729,7 @@ typedef enum : NSUInteger
     _emulationStatus = OEEmulationStatusStarting;
     [_gameCoreManager startEmulationWithCompletionHandler:
      ^{
-         _emulationStatus = OEEmulationStatusPlaying;
+         self->_emulationStatus = OEEmulationStatusPlaying;
      }];
     
     [[self gameViewController] reflectEmulationPaused:NO];
@@ -785,6 +767,24 @@ typedef enum : NSUInteger
     [[self gameViewController] reflectEmulationPaused:pauseEmulation];
 }
 
+- (void)setHandleEvents:(BOOL)handleEvents
+{
+    if (_handleEvents == handleEvents)
+        return;
+
+    _handleEvents = handleEvents;
+    _gameCoreManager.handleEvents = handleEvents;
+}
+
+- (void)setHandleKeyboardEvents:(BOOL)handleKeyboardEvents
+{
+    if (_handleKeyboardEvents == handleKeyboardEvents)
+        return;
+
+    _handleKeyboardEvents = handleKeyboardEvents;
+    _gameCoreManager.handleKeyboardEvents = handleKeyboardEvents;
+}
+
 // switchCore:: expects sender or [sender representedObject] to be an OECorePlugin object and prompts the user for confirmation
 - (void)switchCore:(id)sender;
 {
@@ -809,13 +809,10 @@ typedef enum : NSUInteger
     [alert showSuppressionButtonForUDKey:OEAutoSwitchCoreAlertSuppressionKey];
 
     [alert setCallbackHandler:
-     ^(OEHUDAlert *alert, NSUInteger result)
+     ^(OEHUDAlert *alert, NSModalResponse result)
      {
          if(result != NSAlertFirstButtonReturn)
              return;
-
-         NSUserDefaults *standardUserDefaults = [NSUserDefaults standardUserDefaults];
-         [standardUserDefaults setValue:[self coreIdentifier] forKey:UDSystemCoreMappingKeyForSystemIdentifier([self systemIdentifier])];
 
          [self OE_setupGameCoreManagerUsingCorePlugin:plugin completionHandler:
           ^{
@@ -829,11 +826,11 @@ typedef enum : NSUInteger
 - (IBAction)editControls:(id)sender
 {
     NSDictionary *userInfo = @{
-        OEPreferencesUserInfoPanelNameKey : @"Controls",
-        OEPreferencesUserInfoSystemIdentifierKey : [self systemIdentifier],
+        [OEPreferencesWindowController userInfoPanelNameKey] : @"Controls",
+        [OEPreferencesWindowController userInfoSystemIdentifierKey] : self.systemIdentifier,
     };
 
-    [[NSNotificationCenter defaultCenter] postNotificationName:OEPreferencesOpenPaneNotificationName object:nil userInfo:userInfo];
+    [[NSNotificationCenter defaultCenter] postNotificationName:[OEPreferencesWindowController openPaneNotificationName] object:nil userInfo:userInfo];
 }
 
 - (void)toggleFullScreen:(id)sender
@@ -890,12 +887,12 @@ typedef enum : NSUInteger
         DLog(@"Invalid argument passed: %@", sender);
 }
 
-- (void)toggleAudioMute:(id)sender;
+- (void)toggleAudioMute
 {
     if(_isMuted)
-        [self unmute:sender];
+        [self unmute:self];
     else
-        [self mute:sender];
+        [self mute:self];
 }
 
 - (IBAction)mute:(id)sender;
@@ -1000,40 +997,38 @@ typedef enum : NSUInteger
         return;
     }
 
-    [self OE_saveStateWithName:OESaveStateAutosaveName completionHandler:
-     ^{
-         _emulationStatus = OEEmulationStatusTerminating;
-         // TODO: #567 and #568 need to be fixed first
-         //[self OE_removeDeviceNotificationObservers];
+    [self OE_saveStateWithName:OESaveStateAutosaveName completionHandler:^{
+        self->_emulationStatus = OEEmulationStatusTerminating;
+        // TODO: #567 and #568 need to be fixed first
+        //[self OE_removeDeviceNotificationObservers];
 
-         [_gameCoreManager stopEmulationWithCompletionHandler:
-          ^{
-              DLog(@"Emulation stopped");
-              _emulationStatus = OEEmulationStatusNotSetup;
+        [self->_gameCoreManager stopEmulationWithCompletionHandler:^{
+            DLog(@"Emulation stopped");
+            [[[OEBindingsController defaultBindingsController] systemBindingsForSystemController:self->_systemPlugin.controller] removeBindingsObserver:self];
 
-              _gameSystemController = nil;
-              _gameSystemResponder  = nil;
-              _gameCoreManager      = nil;
+            self->_emulationStatus = OEEmulationStatusNotSetup;
 
-              [[self rom] addTimeIntervalToPlayTime:ABS([_lastPlayStartDate timeIntervalSinceNow])];
-              _lastPlayStartDate = nil;
+            self->_gameCoreManager = nil;
 
-              [super canCloseDocumentWithDelegate:delegate shouldCloseSelector:shouldCloseSelector contextInfo:contextInfo];
-          }];
-     }];
+            [[self rom] addTimeIntervalToPlayTime:ABS([self->_lastPlayStartDate timeIntervalSinceNow])];
+            self->_lastPlayStartDate = nil;
+
+            [super canCloseDocumentWithDelegate:delegate shouldCloseSelector:shouldCloseSelector contextInfo:contextInfo];
+        }];
+    }];
 }
 
 - (BOOL)OE_checkRequiredFiles
 {
     // Check current system plugin for OERequiredFiles and core plugin for OEGameCoreRequiresFiles opt-in
-    if ([[[_gameCoreManager plugin] controller] requiredFilesForSystemIdentifier:[_gameSystemController systemIdentifier]] != nil && [[[_gameCoreManager plugin] controller] requiresFilesForSystemIdentifier:[_gameSystemController systemIdentifier]]) {
+    if (![[[_gameCoreManager plugin] controller] requiresFilesForSystemIdentifier:[_systemPlugin systemIdentifier]])
+        return YES;
 
-        NSArray *validRequiredFiles = [[[_gameCoreManager plugin] controller] requiredFilesForSystemIdentifier:[_gameSystemController systemIdentifier]];
-        OEBIOSFile *biosFile = [[OEBIOSFile alloc] init];
+    NSArray *validRequiredFiles = [[[_gameCoreManager plugin] controller] requiredFilesForSystemIdentifier:[_systemPlugin systemIdentifier]];
+    if (validRequiredFiles == nil)
+        return YES;
 
-        return [biosFile allRequiredFilesAvailableForSystemIdentifier:validRequiredFiles];
-    }
-    return YES;
+    return [[[OEBIOSFile alloc] init] allRequiredFilesAvailableForSystemIdentifier:validRequiredFiles];
 }
 
 - (BOOL)OE_checkGlitches
@@ -1041,14 +1036,14 @@ typedef enum : NSUInteger
     NSString *OEGameCoreGlitchesKey       = OEGameCoreGlitchesSuppressionKey;
     NSString *OEGameCoreGlitchesKeyFormat = @"%@.%@";
     NSString *coreName                    = [[[_gameCoreManager plugin] controller] pluginName];
-    NSString *systemIdentifier            = [_gameSystemController systemIdentifier];
+    NSString *systemIdentifier            = [_systemPlugin systemIdentifier];
     NSString *systemKey                   = [NSString stringWithFormat:OEGameCoreGlitchesKeyFormat, coreName, systemIdentifier];
     NSUserDefaults *userDefaults          = [NSUserDefaults standardUserDefaults];
     
     NSDictionary *glitchInfo              = [userDefaults objectForKey:OEGameCoreGlitchesKey];
     BOOL showAlert                        = ![[glitchInfo valueForKey:systemKey] boolValue];
     
-    if([[[_gameCoreManager plugin] controller] hasGlitchesForSystemIdentifier:[_gameSystemController systemIdentifier]] && showAlert)
+    if([[[_gameCoreManager plugin] controller] hasGlitchesForSystemIdentifier:[_systemPlugin systemIdentifier]] && showAlert)
     {
         NSString *message = [NSString stringWithFormat:NSLocalizedString(@"The %@ core has compatibility issues and some games may contain glitches or not play at all.\n\nPlease do not report problems as we are not responsible for the development of %@.", @""), coreName, coreName];
         OEHUDAlert *alert = [OEHUDAlert alertWithMessageText:message
@@ -1076,7 +1071,7 @@ typedef enum : NSUInteger
 
 - (BOOL)supportsCheats
 {
-    return [[[_gameCoreManager plugin] controller] supportsCheatCodeForSystemIdentifier:[_gameSystemController systemIdentifier]];
+    return [[[_gameCoreManager plugin] controller] supportsCheatCodeForSystemIdentifier:[_systemPlugin systemIdentifier]];
 }
 
 - (IBAction)addCheat:(id)sender;
@@ -1160,7 +1155,7 @@ typedef enum : NSUInteger
 
 - (BOOL)supportsMultipleDiscs
 {
-    return [[[_gameCoreManager plugin] controller] supportsMultipleDiscsForSystemIdentifier:[_gameSystemController systemIdentifier]];
+    return [[[_gameCoreManager plugin] controller] supportsMultipleDiscsForSystemIdentifier:[_systemPlugin systemIdentifier]];
 }
 
 - (IBAction)setDisc:(id)sender;
@@ -1172,7 +1167,7 @@ typedef enum : NSUInteger
 
 - (BOOL)supportsSaveStates
 {
-    return ![[[_gameCoreManager plugin] controller] saveStatesNotSupportedForSystemIdentifier:[_gameSystemController systemIdentifier]];
+    return ![[[_gameCoreManager plugin] controller] saveStatesNotSupportedForSystemIdentifier:[_systemPlugin systemIdentifier]];
 }
 
 - (BOOL)OE_pauseEmulationIfNeeded
@@ -1184,7 +1179,12 @@ typedef enum : NSUInteger
     return pauseNeeded;
 }
 
-- (void)saveState:(id)sender;
+- (void)saveState
+{
+    [self saveState:nil];
+}
+
+- (void)saveState:(id)sender
 {
     if(![self supportsSaveStates])
         return;
@@ -1192,27 +1192,27 @@ typedef enum : NSUInteger
     BOOL didPauseEmulation = [self OE_pauseEmulationIfNeeded];
 
     NSInteger   saveGameNo    = [[self rom] saveStateCount] + 1;
-    // TODO: properly format date
     NSDate *date = [NSDate date];
+	NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+	formatter.timeZone = [NSTimeZone localTimeZone];
+	formatter.dateFormat = @"yyyy-MM-dd HH:mm:ss ZZZ";
+	
     NSString *format = NSLocalizedString(@"Save-Game-%ld %@", @"default save game name");
-    NSString    *proposedName = [NSString stringWithFormat:format, saveGameNo, date];
+    NSString    *proposedName = [NSString stringWithFormat:format, saveGameNo, [formatter stringFromDate:date]];
     OEHUDAlert  *alert        = [OEHUDAlert saveGameAlertWithProposedName:proposedName];
 
     [alert setWindow:[[[self gameViewController] view] window]];
-    [alert setCallbackHandler:
-     ^(OEHUDAlert *alert, NSUInteger result)
-     {
-         if(result == NSAlertFirstButtonReturn)
-         {
-             [self OE_saveStateWithName:[alert stringValue] completionHandler:
-              ^{
-                  if(didPauseEmulation) [self setEmulationPaused:NO];
-              }];
-         }
-         else if(didPauseEmulation) [self setEmulationPaused:NO];
-     }];
 
-    [alert runModal];
+    if ([alert runModal] == NSAlertFirstButtonReturn) {
+        [self OE_saveStateWithName:[alert stringValue] completionHandler:nil];
+    }
+    
+    if(didPauseEmulation) [self setEmulationPaused:NO];
+}
+
+- (void)quickSave
+{
+    [self quickSave:nil];
 }
 
 - (void)quickSave:(id)sender;
@@ -1311,6 +1311,12 @@ typedef enum : NSUInteger
 
 #pragma mark - Loading States
 
+- (void)loadState
+{
+    FIXME("This replaces a call from OESystemResponder which used to pass self, but passing OESystemResponder would yield the same result in -loadState: so I do not know whether this ever worked in this case.");
+    [self loadState:nil];
+}
+
 - (void)loadState:(id)sender;
 {
     // calling pauseGame here because it might need some time to execute
@@ -1328,6 +1334,11 @@ typedef enum : NSUInteger
     }
 
     [self OE_loadState:state];
+}
+
+- (void)quickLoad
+{
+    [self quickLoad:nil];
 }
 
 - (void)quickLoad:(id)sender;
@@ -1352,7 +1363,7 @@ typedef enum : NSUInteger
 
     void (^loadState)(void) =
     ^{
-        [_gameCoreManager loadStateFromFileAtPath:[[state dataFileURL] path] completionHandler:
+        [self->_gameCoreManager loadStateFromFileAtPath:[[state dataFileURL] path] completionHandler:
          ^(BOOL success, NSError *error)
          {
              if(!success)
@@ -1431,12 +1442,113 @@ typedef enum : NSUInteger
 
 - (void)gameViewController:(OEGameViewController *)sender didReceiveMouseEvent:(OEEvent *)event;
 {
-    [[self gameSystemResponder] handleMouseEvent:event];
+    [_gameCoreManager handleMouseEvent:event];
 }
 
-- (void)gameViewController:(OEGameViewController *)sender setDrawSquarePixels:(BOOL)drawSquarePixels
+#pragma mark - OESystemBindingsObserver
+
+- (void)systemBindings:(OESystemBindings *)sender didSetEvent:(OEHIDEvent *)event forBinding:(__kindof OEBindingDescription *)bindingDescription playerNumber:(NSUInteger)playerNumber
 {
-    [_gameCoreManager setDrawSquarePixels:drawSquarePixels];
+    [_gameCoreManager systemBindingsDidSetEvent:event forBinding:bindingDescription playerNumber:playerNumber];
+}
+
+- (void)systemBindings:(OESystemBindings *)sender didUnsetEvent:(OEHIDEvent *)event forBinding:(__kindof OEBindingDescription *)bindingDescription playerNumber:(NSUInteger)playerNumber
+{
+    [_gameCoreManager systemBindingsDidUnsetEvent:event forBinding:bindingDescription playerNumber:playerNumber];
+}
+
+#pragma mark - OEGameCoreOwner
+
+- (void)toggleFullScreen
+{
+    [self toggleFullScreen:self];
+}
+
+- (void)takeScreenshot
+{
+    [self takeScreenshot:self];
+}
+
+- (void)volumeUp
+{
+    [self volumeUp:self];
+}
+
+- (void)volumeDown
+{
+    [self volumeDown:self];
+}
+
+- (void)stopEmulation
+{
+    [self stopEmulation:self];
+}
+
+- (void)resetEmulation
+{
+    [self resetEmulation:self];
+}
+
+- (void)toggleEmulationPaused
+{
+    [self toggleEmulationPaused:self];
+}
+
+- (void)fastForwardGameplay:(BOOL)enable
+{
+    if(_emulationStatus != OEEmulationStatusPlaying) return;
+
+    [[[self gameViewController] gameView] showFastForwardNotification:enable];
+}
+
+- (void)rewindGameplay:(BOOL)enable
+{
+    if(_emulationStatus != OEEmulationStatusPlaying) return;
+
+    [[[self gameViewController] gameView] showRewindNotification:enable];
+}
+
+- (void)stepGameplayFrameForward
+{
+    if(_emulationStatus == OEEmulationStatusPlaying)
+        [self toggleEmulationPaused:self];
+
+    if(_emulationStatus == OEEmulationStatusPaused)
+        [[[self gameViewController] gameView] showStepForwardNotification];
+}
+
+- (void)stepGameplayFrameBackward
+{
+    if(_emulationStatus == OEEmulationStatusPlaying)
+        [self toggleEmulationPaused:self];
+
+    if(_emulationStatus == OEEmulationStatusPaused)
+        [[[self gameViewController] gameView] showStepBackwardNotification];
+}
+
+- (void)setEnableVSync:(BOOL)enable
+{
+    [_gameViewController setEnableVSync:enable];
+}
+
+- (void)setAspectSize:(OEIntSize)newAspectSize
+{
+    [_gameViewController setAspectSize:newAspectSize];
+}
+
+- (void)setScreenSize:(OEIntSize)newScreenSize withIOSurfaceID:(IOSurfaceID)newSurfaceID
+{
+    [_gameViewController setScreenSize:newScreenSize withIOSurfaceID:newSurfaceID];
+}
+
+- (void)setScreenSize:(OEIntSize)newScreenSize aspectSize:(OEIntSize)newAspectSize withIOSurfaceID:(IOSurfaceID)newSurfaceID
+{
+    [_gameViewController setScreenSize:newScreenSize aspectSize:newAspectSize withIOSurfaceID:newSurfaceID];
+}
+
+- (void)setDiscCount:(NSUInteger)discCount
+{
+    [_gameViewController setDiscCount:discCount];
 }
 
 @end

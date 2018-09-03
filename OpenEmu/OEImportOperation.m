@@ -1,5 +1,5 @@
 /*
- Copyright (c) 2012, OpenEmu Team
+ Copyright (c) 2015, OpenEmu Team
 
  Redistribution and use in source and binary forms, with or without
  modification, are permitted provided that the following conditions are met:
@@ -32,45 +32,41 @@
 #import <XADMaster/XADArchive.h>
 
 #import "NSFileManager+OEHashingAdditions.h"
-#import "NSURL+OELibraryAdditions.h"
 
 #import "OELibraryDatabase.h"
 #import "OEDBGame.h"
 #import "OEDBRom.h"
 #import "OEDBCollection.h"
 #import "OEDBSaveState.h"
-#import "OEBIOSFile.h"
+#import "OEDBSystem+CoreDataProperties.h"
+
+#import "OpenEmu-Swift.h"
+
+NS_ASSUME_NONNULL_BEGIN
 
 NSString * const OEImportManualSystems = @"OEImportManualSystems";
 
 @interface OEImportOperation ()
-- (void)OE_performImportStepCheckDirectory;
-- (void)OE_performImportStepCheckArchiveFile;
-- (void)OE_performImportStepHash;
-- (void)OE_performImportStepCheckHash;
-- (void)OE_performImportStepDetermineSystem;
-- (void)OE_performImportStepOrganize;
-- (void)OE_performImportStepOrganizeAdditionalFiles;
-- (void)OE_performImportStepCreateCoreDataObjects;
-@end
 
-@interface OEImportOperation ()
 @property (readonly, nonatomic) BOOL shouldExit;
+@property (nullable) OEFile *file;
 
-@property (strong, readwrite) NSString  *fileName;
-@property (readwrite)         NSInteger  archiveFileIndex;
+@property NSString *fileName;
+@property NSInteger archiveFileIndex;
 
-@property (strong, readwrite) NSString *md5Hash;
-@property (strong, readwrite) NSString *crcHash;
+@property (copy) NSString *md5Hash;
+@property (copy) NSString *crcHash;
 
-@property (strong, readwrite) OEDBRom *rom;
+@property (nullable) OEDBRom *rom;
+
 @end
 
 @implementation OEImportOperation
 @synthesize checked;
 
 #pragma mark - Creating Import Operations
-+ (instancetype)operationWithURL:(NSURL*)url inImporter:(OEROMImporter*)importer
+
++ (nullable instancetype)operationWithURL:(NSURL*)url inImporter:(OEROMImporter*)importer
 {
     NSError *error = nil;
     if(![url checkResourceIsReachableAndReturnError:&error])
@@ -91,8 +87,13 @@ NSString * const OEImportManualSystems = @"OEImportManualSystems";
         return nil;
     }
 
+#ifdef CG_SUPPORT
     // Check for .cg filters and copy them directly (not going through importer queue)
     if([self OE_isFilterAtURL:url])
+        return nil;
+#endif
+    // Check for PlayStation .sbi subchannel data files and copy them directly (not going through importer queue)
+    if([self OE_isSBIFileAtURL:url])
         return nil;
 
     // Ignore text files that are .md
@@ -103,24 +104,25 @@ NSString * const OEImportManualSystems = @"OEImportManualSystems";
         return nil;
 
     OEImportOperation *item = [[OEImportOperation alloc] init];
-    [item setImporter:importer];
-    [item setURL:url];
-    [item setSourceURL:url];
+    item.importer = importer;
+    item.URL = url;
+    item.sourceURL = url;
 
     return item;
 }
 
+#ifdef CG_SUPPORT
 + (BOOL)OE_isFilterAtURL:(NSURL*)url
 {
-    NSString *pathExtension = [[url pathExtension] lowercaseString];
+    NSString *pathExtension = url.pathExtension.lowercaseString;
     if([pathExtension isEqualToString:@"cg"])
     {
         IMPORTDLog(@"File seems to be a filter at %@", url);
 
         NSFileManager *fileManager = [NSFileManager defaultManager];
         NSError       *error       = nil;
-        NSString      *cgFilename  = [url lastPathComponent];
-        NSString      *filtersPath = [NSString pathWithComponents:@[[NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES) lastObject], @"OpenEmu", @"Filters"]];
+        NSString      *cgFilename  = url.lastPathComponent;
+        NSString      *filtersPath = [NSString pathWithComponents:@[NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES).lastObject, @"OpenEmu", @"Filters"]];
         NSString      *destination = [filtersPath stringByAppendingPathComponent:cgFilename];
 
 
@@ -141,29 +143,73 @@ NSString * const OEImportManualSystems = @"OEImportManualSystems";
     }
     return NO;
 }
+#endif
+
++ (BOOL)OE_isSBIFileAtURL:(NSURL*)url
+{
+    NSString *pathExtension = url.pathExtension.lowercaseString;
+    if([pathExtension isEqualToString:@"sbi"])
+    {
+        // Check 4-byte SBI header
+        NSFileHandle *header = [NSFileHandle fileHandleForReadingFromURL:url error:nil];
+        [header seekToFileOffset: 0x0];
+        NSData *sbiHeaderBuffer = [header readDataOfLength: 4];
+        NSData *expectedSBIHeader = [NSData dataWithBytes: "SBI\0" length: 4];
+        [header closeFile];
+        BOOL bytesFound = [sbiHeaderBuffer isEqualToData:expectedSBIHeader];
+
+        if(!bytesFound)
+            return NO;
+
+        IMPORTDLog(@"File seems to be a SBI file at %@", url);
+
+        NSFileManager *fileManager = [NSFileManager defaultManager];
+        NSError       *error       = nil;
+        NSString      *sbiFilename = url.lastPathComponent;
+        NSURL         *sbiURL      = [[[OELibraryDatabase defaultDatabase] databaseFolderURL] URLByAppendingPathComponent:@"roms/Sony PlayStation" isDirectory:YES];
+        NSURL *destination = [sbiURL URLByAppendingPathComponent:sbiFilename];
+
+
+        if(![fileManager createDirectoryAtURL:sbiURL withIntermediateDirectories:YES attributes:nil error:&error])
+        {
+            IMPORTDLog(@"Could not create directory before copying SBI file at %@", url);
+            IMPORTDLog(@"%@", error);
+            error = nil;
+        }
+
+        if(![fileManager copyItemAtURL:url toURL:destination error:&error])
+        {
+            IMPORTDLog(@"Could not copy SBI file %@ to %@", url, destination);
+            IMPORTDLog(@"%@", error);
+        }
+
+        return YES;
+    }
+    return NO;
+}
 
 + (void)OE_tryImportSaveStateAtURL:(NSURL*)url
 {
-    NSString *pathExtension = [[url pathExtension] lowercaseString];
+    NSString *pathExtension = url.pathExtension.lowercaseString;
 
     if([pathExtension isEqualToString:OESaveStateSuffix])
     {
         OELibraryDatabase *db = [OELibraryDatabase defaultDatabase];
-        [OEDBSaveState createSaveStateByImportingBundleURL:url intoContext:[db mainThreadContext] copy:YES];
+        [OEDBSaveState createSaveStateByImportingBundleURL:url intoContext:db.mainThreadContext copy:YES];
     }
 }
 
 + (BOOL)OE_isTextFileAtURL:(NSURL*)url;
 {
-    NSString *pathExtension = [[url pathExtension] lowercaseString];
+    NSString *pathExtension = url.pathExtension.lowercaseString;
 
     if([pathExtension isEqualToString:@"md"])
     {
         // Read 1k of the file an looks for null bytes
         const int sampleSize = 1024;
         char sampleBuffer[sampleSize];
-        const char * path = [[url path] cStringUsingEncoding:NSUTF8StringEncoding];
-        FILE * f = fopen(path, "r");
+        const char *path = url.path.fileSystemRepresentation;
+        FILE *f = fopen(path, "r");
         if(f)
         {
             size_t bytesRead = fread(sampleBuffer, sizeof(char), sampleSize, f);
@@ -177,7 +223,7 @@ NSString * const OEImportManualSystems = @"OEImportManualSystems";
 
 + (BOOL)OE_isInvalidExtensionAtURL:(NSURL *)url
 {
-    NSString *pathExtension = [[url pathExtension] lowercaseString];
+    NSString *pathExtension = url.pathExtension.lowercaseString;
 
     // Ignore unsupported file extensions
     NSMutableSet *validExtensions = [NSMutableSet setWithArray:[OESystemPlugin supportedTypeExtensions]];
@@ -188,20 +234,20 @@ NSString * const OEImportManualSystems = @"OEImportManualSystems";
 
     // TODO:
     // The Archived Game document type lists all supported archive extensions, e.g. zip
-    NSDictionary *bundleInfo      = [[NSBundle mainBundle] infoDictionary];
-    NSArray      *docTypes        = [bundleInfo objectForKey:@"CFBundleDocumentTypes"];
+    NSDictionary *bundleInfo      = [NSBundle mainBundle].infoDictionary;
+    NSArray      *docTypes        = bundleInfo[@"CFBundleDocumentTypes"];
     for(NSDictionary *docType in docTypes)
     {
-        if([[docType objectForKey:@"CFBundleTypeName"] isEqualToString:@"Archived Game"])
+        if([docType[@"CFBundleTypeName"] isEqualToString:@"Archived Game"])
         {
-            [validExtensions addObjectsFromArray:[docType objectForKey:@"CFBundleTypeExtensions"]];
+            [validExtensions addObjectsFromArray:docType[@"CFBundleTypeExtensions"]];
             break;
         }
     }
 
-    if(![url isDirectory])
+    if(!url.isDirectory)
     {
-        if([pathExtension length] > 0 && ![validExtensions containsObject:pathExtension])
+        if(pathExtension.length > 0 && ![validExtensions containsObject:pathExtension])
         {
             IMPORTDLog(@"File has unsupported extension (%@) at %@", pathExtension, url);
             return YES;
@@ -212,6 +258,7 @@ NSString * const OEImportManualSystems = @"OEImportManualSystems";
 }
 
 #pragma mark - NSCoding Protocol
+
 - (instancetype)init
 {
     self = [super init];
@@ -224,73 +271,75 @@ NSString * const OEImportManualSystems = @"OEImportManualSystems";
     return self;
 }
 
-- (instancetype)initWithCoder:(NSCoder *)decoder
+- (nullable instancetype)initWithCoder:(NSCoder *)decoder
 {
     self = [self init];
     if (self)
     {
-        [self setURL:[decoder decodeObjectForKey:@"URL"]];
-        [self setSourceURL:[decoder decodeObjectForKey:@"sourceURL"]];
-        [self setExitStatus:OEImportExitNone];
+        self.URL = [decoder decodeObjectForKey:@"URL"];
+        self.sourceURL = [decoder decodeObjectForKey:@"sourceURL"];
+        self.exitStatus = OEImportExitNone;
     }
     return self;
 }
 
 - (void)encodeWithCoder:(NSCoder *)encoder
 {
-    [encoder encodeObject:[self URL] forKey:@"URL"];
-    [encoder encodeObject:[self sourceURL] forKey:@"sourceURL"];
+    [encoder encodeObject:self.URL forKey:@"URL"];
+    [encoder encodeObject:self.sourceURL forKey:@"sourceURL"];
 }
 
-- (id)copyWithZone:(NSZone *)zone
+- (instancetype)copyWithZone:(nullable NSZone *)zone
 {
     OEImportOperation *copy = [[OEImportOperation allocWithZone:zone] init];
-    [copy setExitStatus:OEImportExitNone];
-    [copy setError:nil];
+    copy.exitStatus = OEImportExitNone;
+    copy.error = nil;
 
-    [copy setExploreArchives:[self exploreArchives]];
-    [copy setURL:[self URL]];
-    [copy setSourceURL:[self sourceURL]];
-    [copy setCollectionID:[self collectionID]];
-    [copy setRom:[self rom]];
+    copy.exploreArchives = self.exploreArchives;
+    copy.URL = self.URL;
+    copy.sourceURL = self.sourceURL;
+    copy.collectionID = self.collectionID;
+    copy.rom = self.rom;
 
-    [copy setSystemIdentifiers:[self systemIdentifiers]];
-    [copy setCompletionHandler:[self completionHandler]];
-    [copy setImporter:[self importer]];
+    copy.systemIdentifiers = self.systemIdentifiers;
+    copy.completionHandler = self.completionHandler;
+    copy.importer = self.importer;
 
-    [copy setChecked:[self checked]];
+    copy.checked = self.checked;
 
-    [copy setFileName:[self fileName]];
-    [copy setExtractedFileURL:[self extractedFileURL]];
-    [copy setArchiveFileIndex:[self archiveFileIndex]];
-    [copy setMd5Hash:[self md5Hash]];
-    [copy setCrcHash:[self crcHash]];
+    copy.fileName = self.fileName;
+    copy.extractedFileURL = self.extractedFileURL;
+    copy.archiveFileIndex = self.archiveFileIndex;
+    copy.md5Hash = self.md5Hash;
+    copy.crcHash = self.crcHash;
 
     return copy;
 }
+
 #pragma mark -
-- (void)exitWithStatus:(OEImportExitStatus)status error:(NSError*)error
+
+- (void)exitWithStatus:(OEImportExitStatus)status error:(nullable NSError *)error
 {
-    NSManagedObjectContext *context = [[self importer] context];
+    NSManagedObjectContext *context = self.importer.context;
 
     if(status == OEImportExitSuccess)
     {
-        OEDBRom *rom = [self rom];
+        OEDBRom *rom = self.rom;
         if(rom != nil)
         {
-            if([self collectionID] != nil && [rom game] != nil)
+            if(self.collectionID != nil && rom.game != nil)
             {
-                OEDBCollection *collection = [OEDBCollection objectWithID:[self collectionID] inContext:context];
-                if(collection != nil && [collection isDeleted] == NO)
+                OEDBCollection *collection = [OEDBCollection objectWithID:self.collectionID inContext:context];
+                if(collection != nil && collection.isDeleted == NO)
                 {
-                    [[[rom game] mutableCollections] addObject:collection];
+                    [rom.game.mutableCollections addObject:collection];
                 }
             }
 
             // start sync thread
-            if([[[rom game] status] intValue] == OEDBGameStatusProcessing)
+            if(rom.game.status.intValue == OEDBGameStatusProcessing)
             {
-                OELibraryDatabase *database = [[self importer] database];
+                OELibraryDatabase *database = self.importer.database;
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
                     [database startOpenVGDBSync];
                 });
@@ -301,7 +350,7 @@ NSString * const OEImportManualSystems = @"OEImportManualSystems";
     if(status != OEImportExitErrorFatal)
     {
         [context save:nil];
-        NSManagedObjectContext *parentContext = [context parentContext];
+        NSManagedObjectContext *parentContext = context.parentContext;
         [parentContext performBlock:^{
             [parentContext save:nil];
         }];
@@ -309,65 +358,69 @@ NSString * const OEImportManualSystems = @"OEImportManualSystems";
 
     if(status != OEImportExitErrorResolvable)
     {
-        [[NSFileManager defaultManager] removeItemAtURL:[self extractedFileURL] error:nil];
+        [[NSFileManager defaultManager] removeItemAtURL:self.extractedFileURL error:nil];
     }
 
     _shouldExit = YES;
-    [self setError:error];
-    [self setExitStatus:status];
+    self.error = error;
+    self.exitStatus = status;
 }
 
 - (BOOL)shouldExit
 {
-    return _shouldExit || [self isCancelled];
+    return _shouldExit || self.isCancelled;
 }
+
 @synthesize shouldExit=_shouldExit;
 
 - (NSManagedObjectID*)romObjectID
 {
-    return [[self rom] permanentID];
+    return self.rom.permanentID;
 }
 
 #pragma mark - NSOperation Overrides
+
 - (void)main
 {
     @autoreleasepool {
-        [[[self importer] context] performBlockAndWait:^{
-            if([self shouldExit]) return;
+        [self.importer.context performBlockAndWait:^{
+            if(self.shouldExit) return;
 
             [self OE_performImportStepCheckDirectory];
-            if([self shouldExit]) return;
+            if(self.shouldExit) return;
 
             [self OE_performImportStepCheckArchiveFile];
-            if([self shouldExit]) return;
+            if(self.shouldExit) return;
 
             [self OE_performImportStepHash];
-            if([self shouldExit]) return;
-
-            [self OE_performImportStepDetermineSystem];
-            if([self shouldExit]) return;
+            if(self.shouldExit) return;
 
             [self OE_performImportStepCheckHash];
-            if([self shouldExit]) return;
+            if(self.shouldExit) return;
+
+            [self OE_performImportStepParseFile];
+            if(self.shouldExit) return;
+
+            [self OE_performImportStepDetermineSystem];
+            if(self.shouldExit) return;
 
             [self OE_performImportStepOrganize];
-            if([self shouldExit]) return;
-
-            [self OE_performImportStepOrganizeAdditionalFiles];
-            if([self shouldExit]) return;
+            if(self.shouldExit) return;
 
             [self OE_performImportStepCreateCoreDataObjects];
         }];
 
     }
 }
+
 #pragma mark - Importing
+
 - (void)OE_performImportStepCheckDirectory
 {
     // Check if file at URL is a directory
     // if so, add new items for each item in the directory
-    NSURL *url = [self URL];
-    if([url isDirectory])
+    NSURL *url = self.URL;
+    if(url.isDirectory)
     {
         NSArray *propertyKeys = @[NSURLIsPackageKey, NSURLIsHiddenKey];
         NSUInteger    options = NSDirectoryEnumerationSkipsSubdirectoryDescendants|NSDirectoryEnumerationSkipsPackageDescendants|NSDirectoryEnumerationSkipsHiddenFiles;
@@ -375,14 +428,14 @@ NSString * const OEImportManualSystems = @"OEImportManualSystems";
         NSDirectoryEnumerator *directoryEnumerator = [[NSFileManager defaultManager] enumeratorAtURL:url includingPropertiesForKeys:propertyKeys options:options errorHandler:NULL];
 
         NSURL *subURL = nil;
-        while([self isCancelled] == NO && (subURL = [directoryEnumerator nextObject]))
+        while(self.isCancelled == NO && (subURL = directoryEnumerator.nextObject))
         {
-            OEROMImporter    *importer = [self importer];
+            OEROMImporter    *importer = self.importer;
             OEImportOperation *subItem = [OEImportOperation operationWithURL:subURL inImporter:importer];
             if(subItem)
             {
-                [subItem setCompletionHandler:[self completionHandler]];
-                [subItem setCollectionID:[self collectionID]];
+                subItem.completionHandler = self.completionHandler;
+                subItem.collectionID = self.collectionID;
                 [importer addOperation:subItem];
             }
         }
@@ -390,16 +443,18 @@ NSString * const OEImportManualSystems = @"OEImportManualSystems";
         [self exitWithStatus:OEImportExitSuccess error:nil];
     }
 }
+
 - (void)OE_performImportStepCheckArchiveFile
 {
-    if([self exploreArchives] == NO) return;
+    if(self.exploreArchives == NO) return;
     IMPORTDLog();
-    NSURL *url = [self URL];
-    NSString *path = [url path];
-    NSString *extension = [[path pathExtension] lowercaseString];
+    NSURL *url = self.URL;
+    NSString *path = url.path;
+    NSString *extension = path.pathExtension.lowercaseString;
 
     // nds and some isos might be recognized as compressed archives by XADArchive
     // but we don't ever want to extract anything from those files
+    NOTE("Exclusions added here also need added to OEGameInfoHelper and OpenEmuHelperApp");
     if([extension isEqualToString:@"nds"] || [extension isEqualToString:@"iso"])
         return;
 
@@ -415,7 +470,7 @@ NSString * const OEImportManualSystems = @"OEImportManualSystems";
 
     if(archive != nil)
     {
-        NSString    *formatName = [archive formatName];
+        NSString    *formatName = archive.formatName;
 
         // XADArchive file detection is not exactly the best
         // ignore some formats
@@ -426,12 +481,12 @@ NSString * const OEImportManualSystems = @"OEImportManualSystems";
             return;
         
         // disable multi-rom archives
-        if([archive numberOfEntries] > 1)
+        if(archive.numberOfEntries > 1)
             return;
         
-        for(int i=0; i<[archive numberOfEntries]; i++)
+        for(int i = 0; i < archive.numberOfEntries; i++)
         {
-            if(![archive entryHasSize:i] || [archive entryIsEncrypted:i] || [archive entryIsDirectory:i] || [archive entryIsArchive:i])
+            if(([archive entryHasSize:i] && [archive sizeOfEntry:i] == 0) || [archive entryIsEncrypted:i] || [archive entryIsDirectory:i] || [archive entryIsArchive:i])
             {
                 IMPORTDLog(@"Entry %d is either empty, or a directory or encrypted or iteself an archive", i);
                 continue;
@@ -439,12 +494,12 @@ NSString * const OEImportManualSystems = @"OEImportManualSystems";
 
             NSString *folder = temporaryDirectoryForDecompressionOfPath(path);
             NSString *name   = [archive nameOfEntry:i];
-            if ([[name pathExtension] length] == 0 && [[path pathExtension] length] > 0) {
+            if (name.pathExtension.length == 0 && path.pathExtension.length > 0) {
                 // this won't do. Re-add the archive's extension in case it's .smc or the like
-                name = [name stringByAppendingPathExtension:[path pathExtension]];
+                name = [name stringByAppendingPathExtension:path.pathExtension];
             }
 
-            [self setFileName:name];
+            self.fileName = name;
             NSString *extractionPath = [folder stringByAppendingPathComponent:name];
 
             BOOL isdir;
@@ -460,8 +515,8 @@ NSString * const OEImportManualSystems = @"OEImportManualSystems";
                 }
                 
                 // exception is caught but handler does not execute, so check if extraction worked
-                NSNumber *fileSize = [tmpURL fileSize];
-                if([fileSize integerValue] == 0)
+                NSNumber *fileSize = tmpURL.fileSize;
+                if(fileSize.integerValue == 0)
                 {
                     [fm removeItemAtPath:folder error:nil];
                     tmpURL = nil;
@@ -471,9 +526,9 @@ NSString * const OEImportManualSystems = @"OEImportManualSystems";
 
             if(tmpURL)
             {
-                [self setExtractedFileURL:tmpURL];
-                [self setArchiveFileIndex:i];
-                [self setExploreArchives:NO];
+                self.extractedFileURL = tmpURL;
+                self.archiveFileIndex = i;
+                self.exploreArchives = NO;
             }
         }
     }
@@ -481,10 +536,10 @@ NSString * const OEImportManualSystems = @"OEImportManualSystems";
 
 - (void)OE_performImportStepHash
 {
-    if([self md5Hash] || [self crcHash]) return;
+    if(self.md5Hash || self.crcHash) return;
 
     IMPORTDLog();
-    NSURL         *url = [self extractedFileURL] ?: [self URL];
+    NSURL         *url = self.extractedFileURL ?: self.URL;
     NSString      *md5, *crc;
     NSError       *error = nil;
     NSFileManager *fileManager = [NSFileManager defaultManager];
@@ -499,11 +554,11 @@ NSString * const OEImportManualSystems = @"OEImportManualSystems";
     }
     else
     {
-        [self setMd5Hash:[md5 lowercaseString]];
-        [self setCrcHash:[crc lowercaseString]];
+        self.md5Hash = md5.lowercaseString;
+        self.crcHash = crc.lowercaseString;
 
         OEBIOSFile *biosFile = [[OEBIOSFile alloc] init];
-        if([biosFile checkIfBIOSFileAndImportAtURL:url withMD5:[self md5Hash]])
+        if([biosFile checkIfBIOSFileAndImportAtURL:url withMD5:self.md5Hash])
         {
             IMPORTDLog(@"File seems to be a BIOS at %@", url);
             [self exitWithStatus:OEImportExitNone error:nil];
@@ -516,21 +571,18 @@ NSString * const OEImportManualSystems = @"OEImportManualSystems";
 {
     IMPORTDLog();
     NSError  *error = nil;
-    NSString *md5   = [self md5Hash];
-    NSString *crc   = [self crcHash];
-    NSManagedObjectContext *context = [[self importer] context];
+    NSString *md5   = self.md5Hash;
+    NSManagedObjectContext *context = self.importer.context;
 
     OEDBRom *rom = nil;
 
     if(rom == nil)
         rom = [OEDBRom romWithMD5HashString:md5 inContext:context error:&error];
-    if(rom == nil)
-        rom = [OEDBRom romWithCRC32HashString:crc inContext:context error:&error];
 
     if(rom != nil)
     {
-        NSURL *romURL = [rom URL];
-        [self setRom:rom];
+        NSURL *romURL = rom.URL;
+        self.rom = rom;
         if(![romURL checkResourceIsReachableAndReturnError:&error])
         {
             IMPORTDLog(@"rom file not available");
@@ -541,73 +593,94 @@ NSString * const OEImportManualSystems = @"OEImportManualSystems";
         }
         else
         {
-            [self exitWithStatus:OEImportExitSuccess error:nil];
+            error = [NSError errorWithDomain:OEImportErrorDomainFatal code:OEImportErrorCodeAlreadyInDatabase userInfo:nil];
+            [self exitWithStatus:OEImportExitErrorFatal error:error];
         }
     }
 }
 
+- (void)OE_performImportStepParseFile
+{
+    NSURL *url = self.extractedFileURL ?: self.URL;
+
+    NSError *error;
+    OEFile *file = [OEFile fileWithURL:url error:&error];
+    if (file != nil) {
+        self.file = file;
+        return;
+    }
+
+    IMPORTDLog(@"Error while parsing file: %@", error);
+    [self exitWithStatus:OEImportExitErrorFatal error:error];
+}
+
 - (void)OE_performImportStepDetermineSystem
 {
-    IMPORTDLog(@"URL: %@", [self sourceURL]);
-    if([self rom] != nil) return;
+    IMPORTDLog(@"URL: %@", self.sourceURL);
+    if(self.rom != nil) return;
 
     NSError *error = nil;
-    OEROMImporter *importer = [self importer];
-    NSManagedObjectContext *context = [importer context];
-    NSURL *url = [self extractedFileURL] ?: [self URL];
+    OEROMImporter *importer = self.importer;
+    NSManagedObjectContext *context = importer.context;
 
     // see if systemidentifiers are set already (meaning that user determined system)
-    NSArray *validSystems = nil;
-    if([self systemIdentifiers])
+    NSArray <OEDBSystem *> *validSystems = nil;
+    if(self.systemIdentifiers)
     {
-        NSMutableArray *systems = [NSMutableArray arrayWithCapacity:[[self systemIdentifiers] count]];
-        [[self systemIdentifiers] enumerateObjectsUsingBlock:^(id obj, NSUInteger idx, BOOL *stop) {
+        NSMutableArray *systems = [NSMutableArray arrayWithCapacity:self.systemIdentifiers.count];
+        for(NSString *obj in self.systemIdentifiers)
+        {
             OEDBSystem *system = [OEDBSystem systemForPluginIdentifier:obj inContext:context];
             if(system != nil)
                 [systems addObject:system];
-        }];
+        }
         validSystems = systems;
     }
     else if([[NSUserDefaults standardUserDefaults] boolForKey:OEImportManualSystems])
-    {
         validSystems = [OEDBSystem allSystemsInContext:context];
-    }
     else
-    {
-        validSystems = [OEDBSystem systemsForFileWithURL:url inContext:context error:&error];
+        validSystems = [OEDBSystem systemsForFile:self.file inContext:context error:&error];
+
+    if (validSystems == nil) {
+        IMPORTDLog(@"Error while looking for a valid system: %@", error);
+        [self exitWithStatus:OEImportExitErrorFatal error:error];
+        return;
     }
 
-    if(validSystems == nil || [validSystems count] == 0)
+    if(validSystems.count == 0)
     {
         IMPORTDLog(@"Could not get valid systems");
         IMPORTDLog(@"%@", error);
-        if([self extractedFileURL])
-        {
+        if (self.extractedFileURL) {
             IMPORTDLog(@"Try again with zip itself");
-            [self setExtractedFileURL:nil];
+            self.extractedFileURL = nil;
+            self.file = nil;
+            [self OE_performImportStepParseFile];
+            if(self.shouldExit) return;
+
             [self OE_performImportStepDetermineSystem];
         }
-        else
-        {
+        else {
             error = [NSError errorWithDomain:OEImportErrorDomainFatal code:OEImportErrorCodeNoSystem userInfo:nil];
             [self exitWithStatus:OEImportExitErrorFatal error:error];
         }
         return;
     }
-    else if([validSystems count] == 1)
+    else if(validSystems.count == 1)
     {
-        [self setSystemIdentifiers:@[[[validSystems lastObject] systemIdentifier]]];
+        self.systemIdentifiers = @[validSystems.lastObject.systemIdentifier];
     }
     else // Found multiple valid systems after checking extension and system specific canHandleFile:
     {
-        NSMutableArray *systemIDs = [NSMutableArray arrayWithCapacity:[validSystems count]];
-        [validSystems enumerateObjectsUsingBlock:^(OEDBSystem *system, NSUInteger idx, BOOL *stop){
-            NSString *systemIdentifier = [system systemIdentifier];
+        NSMutableArray <NSString *> *systemIDs = [NSMutableArray arrayWithCapacity:validSystems.count];
+        for(OEDBSystem *system in validSystems)
+        {
+            NSString *systemIdentifier = system.systemIdentifier;
             [systemIDs addObject:systemIdentifier];
-        }];
-        [self setSystemIdentifiers:systemIDs];
+        }
+        self.systemIdentifiers = systemIDs;
 
-        NSDictionary *userInfo = [NSDictionary dictionaryWithObject:@"Aaargh, too many systems. You need to choose one!" forKey:NSLocalizedDescriptionKey];
+        NSDictionary *userInfo = @{ NSLocalizedDescriptionKey : @"Aaargh, too many systems. You need to choose one!" };
         error = [NSError errorWithDomain:OEImportErrorDomainResolvable code:OEImportErrorCodeMultipleSystems userInfo:userInfo];
         [self exitWithStatus:OEImportExitErrorResolvable error:error];
     }
@@ -617,221 +690,96 @@ NSString * const OEImportManualSystems = @"OEImportManualSystems";
 {
     NSUserDefaults *standardUserDefaults = [NSUserDefaults standardUserDefaults];
     BOOL copyToLibrary   = [standardUserDefaults boolForKey:OECopyToLibraryKey];
-    BOOL organizeLibrary = [standardUserDefaults boolForKey:OEOrganizeLibraryKey];
 
-    NSError *error       = nil;
-    NSURL   *url         = [self URL];
-
-    NSManagedObjectContext *context = [[self importer] context];
-
-    // Unlock rom file so we can rename the copy directly
-    BOOL romFileLocked = NO;
-    if([[[[NSFileManager defaultManager] attributesOfItemAtPath:[url path] error:&error] objectForKey:NSFileImmutable] boolValue])
-    {
-        romFileLocked = YES;
-        [[NSFileManager defaultManager] setAttributes:@{ NSFileImmutable: @(FALSE) } ofItemAtPath:[url path] error:nil];
+    if (!copyToLibrary) {
+        // There is nothing to do in this method if we do not have to copy or move the file.
+        return;
     }
 
-    // Copy to library folder if it's not already there
-    OELibraryDatabase *database = [[self importer] database];
+    NSError *error       = nil;
+    NSURL   *url         = self.URL;
 
-    if(copyToLibrary && ![url isSubpathOfURL:[database romsFolderURL]])
-    {
-        NSString *fullName  = [url lastPathComponent];
-        NSString *extension = [fullName pathExtension];
-        NSString *baseName  = [fullName stringByDeletingPathExtension];
-
-        NSURL *unsortedFolder = [database unsortedRomsFolderURL];
-        NSURL *romURL         = [unsortedFolder URLByAppendingPathComponent:fullName];
-        romURL = [romURL uniqueURLUsingBlock:^NSURL *(NSInteger triesCount) {
-            NSString *newName = [NSString stringWithFormat:@"%@ %ld.%@", baseName, triesCount, extension];
-            return [unsortedFolder URLByAppendingPathComponent:newName];
-        }];
-
-        if([[NSFileManager defaultManager] copyItemAtURL:url toURL:romURL error:&error])
-        {
-            // Lock original file again
-            if(romFileLocked)
-                [[NSFileManager defaultManager] setAttributes:@{ NSFileImmutable: @(YES) } ofItemAtPath:[url path] error:&error];
-        }
-
-        if(error != nil)
-        {
-            IMPORTDLog(@"Could not copy rom to library");
+    if (self.extractedFileURL) {
+        OEFile *originalFile = [OEFile fileWithURL:url error:&error];
+        if (!originalFile) {
+            IMPORTDLog(@"Failed to create file from original archive.");
             [self exitWithStatus:OEImportExitErrorFatal error:error];
             return;
         }
 
-        url = [romURL copy];
-        [self setURL:url];
+        self.file = originalFile;
     }
 
-    // Move items in library folder to system sub-folder
-    if(organizeLibrary && [url isSubpathOfURL:[database romsFolderURL]])
-    {
-        // unlock file so we can move and rename it
-        if([[[NSFileManager defaultManager] attributesOfItemAtPath:[url path] error:&error] objectForKey:NSFileImmutable])
-            [[NSFileManager defaultManager] setAttributes:@{ NSFileImmutable: @(FALSE) } ofItemAtPath:[url path] error:nil];
+    NSManagedObjectContext *context = self.importer.context;
 
+    // Unlock rom file so we can rename the copy directly
+    BOOL romFileLocked = NO;
+    NSNumber *isImmutable;
+    if ([url getResourceValue:&isImmutable forKey:NSURLIsUserImmutableKey error:&error] && isImmutable.boolValue) {
+        romFileLocked = YES;
+        [url setResourceValue:@NO forKey:NSURLIsUserImmutableKey error:nil];
+    }
+
+    // Copy to system sub-folder in library folder if it's not already there
+    OELibraryDatabase *database = self.importer.database;
+
+    if(copyToLibrary && ![url isSubpathOfURL:database.romsFolderURL])
+    {
         __block OEDBSystem *system = nil;
-        if([self rom] != nil)
+        if(self.rom != nil)
         {
             IMPORTDLog(@"using rom object");
-            system = [[[self rom] game] system];
+            system = self.rom.game.system;
         }
         else
         {
-            NSAssert([[self systemIdentifiers] count] == 1, @"System should have been detected at an earlier import stage");
-            NSString *systemIdentifier = [[self systemIdentifiers] lastObject];
+            NSAssert(self.systemIdentifiers.count == 1, @"System should have been detected at an earlier import stage");
+            NSString *systemIdentifier = self.systemIdentifiers.lastObject;
             system = [OEDBSystem systemForPluginIdentifier:systemIdentifier inContext:context];
         }
 
-        NSString *fullName  = [url lastPathComponent];
-        NSString *extension = [fullName pathExtension];
-        NSString *baseName  = [fullName stringByDeletingPathExtension];
+        NSString *fullName  = url.lastPathComponent;
+        NSString *extension = fullName.pathExtension;
+        NSString *baseName  = fullName.stringByDeletingPathExtension;
 
         NSURL *systemFolder = [database romsFolderURLForSystem:system];
         NSURL *romURL       = [systemFolder URLByAppendingPathComponent:fullName];
 
         if([romURL isEqualTo:url])
         {
-            [self setURL:romURL];
+            self.URL = romURL;
             return;
         }
 
-        romURL = [romURL uniqueURLUsingBlock:^NSURL*(NSInteger triesCount) {
+        romURL = [romURL uniqueURLUsingBlock:^NSURL *(NSInteger triesCount) {
             NSString *newName = [NSString stringWithFormat:@"%@ %ld.%@", baseName, triesCount, extension];
             return [systemFolder URLByAppendingPathComponent:newName];
         }];
 
-        NSError *error = nil;
-        if(![[NSFileManager defaultManager] moveItemAtURL:url toURL:romURL error:&error])
-        {
+        OEFile *copiedFile = [self.file fileByCopyingFileToURL:romURL error:&error];
+        if (copiedFile != nil) {
+            // Lock original file again
+            if(romFileLocked)
+                [url setResourceValue:@YES forKey:NSURLIsUserImmutableKey error:nil];
+
+            url = [romURL copy];
+            self.URL = url;
+            self.file = copiedFile;
+        } else {
+            IMPORTDLog(@"Could not copy rom to library");
             [self exitWithStatus:OEImportExitErrorFatal error:error];
-        }
-        else
-        {
-            [self setURL:romURL];
+            return;
         }
     }
-}
-
-- (void)OE_performImportStepOrganizeAdditionalFiles
-{
-    IMPORTDLog();
-    OELibraryDatabase *database = [[self importer] database];
-    NSURL    *url  = [self URL];
-    NSString *path = [url path];
-
-    NSUserDefaults *standardUserDefaults = [NSUserDefaults standardUserDefaults];
-    BOOL copyToLibrary   = [standardUserDefaults boolForKey:OECopyToLibraryKey];
-    BOOL organizeLibrary = [standardUserDefaults boolForKey:OEOrganizeLibraryKey];
-    if((copyToLibrary || organizeLibrary) && [[[url pathExtension] lastPathComponent] isEqualToString:@"cue"])
-    {
-        NSString *referencedFilesDirectory = [[[self sourceURL] path] stringByDeletingLastPathComponent];
-        OECUESheet *cue = [[OECUESheet alloc] initWithPath:path andReferencedFilesDirectory:referencedFilesDirectory];
-        if(cue == nil)
-        {
-            // TODO: Create user info
-            IMPORTDLog(@"unable to read cue sheet");
-            NSError *error = [NSError errorWithDomain:OEImportErrorDomainFatal code:OEImportErrorCodeInvalidFile userInfo:nil];
-            [self exitWithStatus:OEImportExitErrorFatal error:error];
-            return;
-        }
-
-        if(![cue allFilesAvailable])
-        {
-            IMPORTDLog(@"Some files from the cuesheet are missing!");
-
-            // TODO: Create user info
-            NSError *error = [NSError errorWithDomain:OEImportErrorDomainFatal code:OEImportErrorCodeAdditionalFiles userInfo:nil];
-            [self exitWithStatus:OEImportExitErrorFatal error:error];
-            return;
-        }
-
-        NSURL *sourceURL = [self sourceURL];
-        NSString *targetDirectory = [path stringByDeletingLastPathComponent];
-        if(copyToLibrary && ![sourceURL isSubpathOfURL:[database romsFolderURL]])
-        {
-            IMPORTDLog(@"copy to '%@'", targetDirectory);
-            NSError *error = nil;
-            if(![cue copyReferencedFilesToPath:targetDirectory withError:&error])
-            {
-                IMPORTDLog(@"%@", error);
-                [self exitWithStatus:OEImportExitErrorFatal error:error];
-                return;
-            }
-        }
-        else if(organizeLibrary && [sourceURL isSubpathOfURL:[database romsFolderURL]])
-        {
-            IMPORTDLog(@"move to '%@'", targetDirectory);
-            NSError *error = nil;
-            if(![cue moveReferencedFilesToPath:targetDirectory withError:&error])
-            {
-                IMPORTDLog(@"%@", error);
-                [self exitWithStatus:OEImportExitErrorFatal error:error];
-                return;
-            }
-        }
-    }
-    else if((copyToLibrary || organizeLibrary) && [[[url pathExtension] lastPathComponent] isEqualToString:@"ccd"])
-    {
-        NSURL *referencedFilesDirectory = [[self sourceURL] URLByDeletingLastPathComponent];
-        OECloneCD *ccd = [[OECloneCD alloc] initWithURL:url andReferencedFilesDirectory:referencedFilesDirectory];
-        if(ccd == nil)
-        {
-            // TODO: Create user info
-            IMPORTDLog(@"unable to read ccd");
-            NSError *error = [NSError errorWithDomain:OEImportErrorDomainFatal code:OEImportErrorCodeInvalidFile userInfo:nil];
-            [self exitWithStatus:OEImportExitErrorFatal error:error];
-            return;
-        }
-
-        if(![ccd allFilesAvailable])
-        {
-            IMPORTDLog(@"img and/or sub files from the ccd are missing!");
-            
-            // TODO: Create user info
-            NSError *error = [NSError errorWithDomain:OEImportErrorDomainFatal code:OEImportErrorCodeAdditionalFiles userInfo:nil];
-            [self exitWithStatus:OEImportExitErrorFatal error:error];
-            return;
-        }
-
-        NSURL *sourceURL = [self sourceURL];
-        NSURL *targetDirectory = [url URLByDeletingLastPathComponent];
-        if(copyToLibrary && ![sourceURL isSubpathOfURL:[database romsFolderURL]])
-        {
-            IMPORTDLog(@"copy to '%@'", targetDirectory);
-            NSError *error = nil;
-            if(![ccd copyReferencedFilesToURL:targetDirectory withError:&error])
-            {
-                IMPORTDLog(@"%@", error);
-                [self exitWithStatus:OEImportExitErrorFatal error:error];
-                return;
-            }
-        }
-        else if(organizeLibrary && [sourceURL isSubpathOfURL:[database romsFolderURL]])
-        {
-            IMPORTDLog(@"move to '%@'", targetDirectory);
-            NSError *error = nil;
-            if(![ccd moveReferencedFilesToURL:targetDirectory withError:&error])
-            {
-                IMPORTDLog(@"%@", error);
-                [self exitWithStatus:OEImportExitErrorFatal error:error];
-                return;
-            }
-        }
-    }
-
 }
 
 - (void)OE_performImportStepCreateCoreDataObjects
 {
     IMPORTDLog();
 
-    NSManagedObjectContext *context = [[self importer] context];
+    NSManagedObjectContext *context = self.importer.context;
     NSError *error = nil;
-    OEDBRom *rom = [self rom];
+    OEDBRom *rom = self.rom;
 
     if(rom == nil)
     {
@@ -845,53 +793,60 @@ NSString * const OEImportManualSystems = @"OEImportManualSystems";
         return;
     }
 
-    NSString *md5 = [self md5Hash];
-    NSString *crc = [self crcHash];
+    NSString *md5 = self.md5Hash;
+    NSString *crc = self.crcHash;
 
-    [rom setURL:[self URL]];
-    if([self fileName] != nil) [rom setFileName:[self fileName]];
-    if(crc != nil) [rom setCrc32:[crc lowercaseString]];
-    if(md5 != nil) [rom setMd5:[md5 lowercaseString]];
+    rom.URL = self.URL;
+    if(self.fileName != nil) rom.fileName = self.fileName;
+    if(crc != nil) rom.crc32 = crc.lowercaseString;
+    if(md5 != nil) rom.md5 = md5.lowercaseString;
 
     // Check if system plugin for ROM implemented headerLookupForFile: and serialLookupForFile:
-    NSAssert([[self systemIdentifiers] count] == 1, @"System should have been detected at an earlier import stage");
-    NSString *systemIdentifier = [[self systemIdentifiers] lastObject];
+    NSAssert(self.systemIdentifiers.count == 1, @"System should have been detected at an earlier import stage");
+    NSString *systemIdentifier = self.systemIdentifiers.lastObject;
 
-    NSURL *lookupURL = [self extractedFileURL] ?: [rom URL];
-    NSString *headerFound = [OEDBSystem headerForFileWithURL:lookupURL forSystem:systemIdentifier];
-    NSString *serialFound = [OEDBSystem serialForFileWithURL:lookupURL forSystem:systemIdentifier];
+    NSURL *lookupURL = self.extractedFileURL ?: rom.URL;
+    OEFile *file = [OEFile fileWithURL:lookupURL error:&error];
+    if (file == nil) {
+        [self exitWithStatus:OEImportExitErrorFatal error:error];
+        return;
+    }
+
+    NSString *headerFound = [OEDBSystem headerForFile:file forSystem:systemIdentifier];
+    NSString *serialFound = [OEDBSystem serialForFile:file forSystem:systemIdentifier];
 
     if(headerFound != nil)
     {
-        [rom setHeader:headerFound];
+        rom.header = headerFound;
     }
 
     if(serialFound != nil)
     {
-        [rom setSerial:serialFound];
+        rom.serial = serialFound;
     }
 
-    if([self archiveFileIndex] != NSNotFound)
-        [rom setArchiveFileIndex:@([self archiveFileIndex])];
+    if(self.archiveFileIndex != NSNotFound)
+        rom.archiveFileIndex = @(self.archiveFileIndex);
 
-    OEDBGame *game = [rom game];
+    OEDBGame *game = rom.game;
     if(game == nil)
     {
-        NSString *systemIdentifier = [[self systemIdentifiers] lastObject];
+        NSString *systemIdentifier = self.systemIdentifiers.lastObject;
         OEDBSystem *system = [OEDBSystem systemForPluginIdentifier:systemIdentifier inContext:context];
         if(system != nil)
         {
-            NSURL *url = [self extractedFileURL] ?: [rom URL];
-            NSString *gameTitleWithSuffix = [url lastPathComponent];
-            NSString *gameTitleWithoutSuffix = [gameTitleWithSuffix stringByDeletingPathExtension];
+            NSURL *url = self.extractedFileURL ?: rom.URL;
+            NSString *gameTitleWithSuffix = url.lastPathComponent;
+            NSString *gameTitleWithoutSuffix = gameTitleWithSuffix.stringByDeletingPathExtension;
 
             game = [OEDBGame createObjectInContext:context];
-            [game setName:gameTitleWithoutSuffix];
-            [game setSystem:system];
+            game.name = gameTitleWithoutSuffix;
+            game.system = system;
+            game.importDate = [NSDate date];
         }
         else
         {
-            NSDictionary *userInfo = [NSDictionary dictionaryWithObject:@"No system! Someone must have deleted or disabled it!" forKey:NSLocalizedDescriptionKey];
+            NSDictionary *userInfo = @{ NSLocalizedDescriptionKey : @"No system! Someone must have deleted or disabled it!" };
             error = [NSError errorWithDomain:OEImportErrorDomainFatal code:OEImportErrorCodeNoSystem userInfo:userInfo];
             [self exitWithStatus:OEImportExitErrorFatal error:error];
             return;
@@ -900,14 +855,14 @@ NSString * const OEImportManualSystems = @"OEImportManualSystems";
     
     if(game != nil)
     {
-        [rom setGame:game];
+        rom.game = game;
 
         if([[NSUserDefaults standardUserDefaults] boolForKey:OEAutomaticallyGetInfoKey])
         {
-            [game setStatus:@(OEDBGameStatusProcessing)];
+            game.status = @(OEDBGameStatusProcessing);
         }
 
-        [self setRom:rom];
+        self.rom = rom;
 
         [self exitWithStatus:OEImportExitSuccess error:nil];
     }
@@ -916,9 +871,12 @@ NSString * const OEImportManualSystems = @"OEImportManualSystems";
         [rom delete];
         [game delete];
 
-        [self setRom:nil];
+        self.rom = nil;
         NSError *error = [NSError errorWithDomain:OEImportErrorDomainFatal code:OEImportErrorCodeNoGame userInfo:nil];
         [self exitWithStatus:OEImportExitErrorFatal error:error];
     }
 }
+
 @end
+
+NS_ASSUME_NONNULL_END

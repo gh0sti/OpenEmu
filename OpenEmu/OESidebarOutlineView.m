@@ -30,17 +30,13 @@
 #import "OESidebarController.h"
 
 #import <objc/runtime.h>
-#import "OESidebarOutlineButtonCell.h"
-#import "OESideBarGroupItem.h"
+#import "OESidebarGroupItem.h"
 #import "OEMenu.h"
 
-#import "OEDBSystem.h"
+#import "OEDBSystem+CoreDataProperties.h" 
 #import "OELibraryDatabase.h"
 
 #import "OECorePlugin.h"
-
-NSString *const OESidebarConsolesNotCollapsibleKey   = @"OESidebarConsolesNotCollapsible";
-NSString *const OESidebarTogglesSystemNotification   = @"OESidebarTogglesSystemNotification";
 
 @interface OESidebarOutlineView ()
 {
@@ -71,7 +67,6 @@ NSString *const OESidebarTogglesSystemNotification   = @"OESidebarTogglesSystemN
     self = [super initWithCoder:aDecoder];
     if (self) 
     {
-        [self setupOutlineCell];
         [self OE_setupDefaultColors];
         _highlightedRow = -1;
     }
@@ -83,7 +78,6 @@ NSString *const OESidebarTogglesSystemNotification   = @"OESidebarTogglesSystemN
     self = [super initWithFrame:frameRect];
     if (self) 
     {
-        [self setupOutlineCell];
         [self OE_setupDefaultColors];
         _highlightedRow = -1;
     }
@@ -138,15 +132,8 @@ NSString *const OESidebarTogglesSystemNotification   = @"OESidebarTogglesSystemN
 
     if([item isGroupHeaderInSidebar])
     {
-        title = [self isItemExpanded:item] ? NSLocalizedString(@"Collapse", @"") : NSLocalizedString(@"Expand", @"");
-
-        menuItem = [[NSMenuItem alloc] initWithTitle:title action:@selector(OE_toggleGroupForMenuItem:) keyEquivalent:@""];
-        [menuItem setRepresentedObject:item];
-        [menu addItem:menuItem];
-
         if(index == 0)
         {
-            [menu addItem:[NSMenuItem separatorItem]];
             // TODO: clean up, menuForEvent should be delegated to the sidebarcontroller
             for(OEDBSystem *system in [OEDBSystem allSystemsInContext:[[OELibraryDatabase defaultDatabase] mainThreadContext]])
             {
@@ -154,7 +141,7 @@ NSString *const OESidebarTogglesSystemNotification   = @"OESidebarTogglesSystemN
                 [menuItem setRepresentedObject:system];
                 [menuItem setState:[[system enabled] boolValue] ? NSOnState : NSOffState];
                 [menu addItem:menuItem];
- }
+            }
         }
     }
     else if([item isKindOfClass:[OEDBSystem class]])
@@ -231,11 +218,14 @@ NSString *const OESidebarTogglesSystemNotification   = @"OESidebarTogglesSystemN
         }
     }
 
-    OEMenuStyle style = OEMenuStyleDark;
-    if([[NSUserDefaults standardUserDefaults] boolForKey:OEMenuOptionsStyleKey]) style = OEMenuStyleLight;
 
-    NSDictionary *options = [NSDictionary dictionaryWithObject:[NSNumber numberWithUnsignedInteger:style] forKey:OEMenuOptionsStyleKey];
-    [OEMenu openMenu:menu withEvent:event forView:self options:options];
+    if([[menu itemArray] count]) {
+        OEMenuStyle style = OEMenuStyleDark;
+        if([[NSUserDefaults standardUserDefaults] boolForKey:OEMenuOptionsStyleKey]) style = OEMenuStyleLight;
+
+        NSDictionary *options = [NSDictionary dictionaryWithObject:[NSNumber numberWithUnsignedInteger:style] forKey:OEMenuOptionsStyleKey];
+        [OEMenu openMenu:menu withEvent:event forView:self options:options];
+    }
 
     _highlightedRow = -1;
     [self setNeedsDisplay];
@@ -260,7 +250,8 @@ NSString *const OESidebarTogglesSystemNotification   = @"OESidebarTogglesSystemN
 
 - (void)OE_toggleSystemForMenuItem:(NSMenuItem *)menuItem
 {
-    [[NSNotificationCenter defaultCenter] postNotificationName:OESidebarTogglesSystemNotification object:[menuItem representedObject]];
+    OEDBSystem *system = menuItem.representedObject;
+    [system toggleEnabledAndPresentError];
 }
 
 - (void)OE_duplicateCollectionForMenuItem:(NSMenuItem *)menuItem
@@ -279,22 +270,10 @@ NSString *const OESidebarTogglesSystemNotification   = @"OESidebarTogglesSystemN
 }
 
 #pragma mark - Calculating rects
-- (NSRect)rectOfRow:(NSInteger)row
-{
-    // We substract 1 here because the view is 1px wider than it should be so it can show a 1px black line on the right side that easily disappears when the sidebar is collapsed
-    NSRect rect = [super rectOfRow:row];
-    rect.size.width -= 1.0;
-    return rect;
-}
 
 - (NSRect)frameOfOutlineCellAtRow:(NSInteger)row
 {
-    if(row==0 && [[NSUserDefaults standardUserDefaults] boolForKey:OESidebarConsolesNotCollapsibleKey])
-        return NSZeroRect;
-    
-    NSRect rect = [super frameOfOutlineCellAtRow:row];
-    rect.origin.y += 3;
-    return rect;
+    return NSZeroRect;
 }
 
 - (NSRect)rectOfGroup:(id)item
@@ -310,7 +289,7 @@ NSString *const OESidebarTogglesSystemNotification   = @"OESidebarTogglesSystemN
     if(![self isItemExpanded:item])
         return [self rectOfRow:[self rowForItem:item]];
     
-    // TODO: this will break when we add collection folders that can have children on their own
+    // TODO: this will break when we add collection folders that can have children of their own
     NSUInteger children = [[self dataSource] outlineView:self numberOfChildrenOfItem:item];
     NSRect firstItem = [self rectOfRow:[self rowForItem:item]];
     NSRect lastItem  = [self rectOfRow:[self rowForItem:item] + children];
@@ -330,29 +309,16 @@ NSString *const OESidebarTogglesSystemNotification   = @"OESidebarTogglesSystemN
     NSWindow *win = [self window];
     BOOL isActive = ([win isMainWindow] && [win firstResponder]==self) || [win firstResponder]==[OESidebarFieldEditor fieldEditor];
     
-    NSColor *bottomLineColor;
-    NSColor *topLineColor;
-    
-    NSColor *gradientTop;
-    NSColor *gradientBottom;
-    
+    NSColor *fillColor;
     if(isActive)
     {
         // Active
-        topLineColor = [NSColor colorWithDeviceRed:0.373 green:0.584 blue:0.91 alpha:1];
-        bottomLineColor = [NSColor colorWithDeviceRed:0.157 green:0.157 blue:0.157 alpha:1];
-        
-        gradientTop = [NSColor colorWithDeviceRed:0.263 green:0.51 blue:0.894 alpha:1];
-        gradientBottom = [NSColor colorWithDeviceRed:0.137 green:0.243 blue:0.906 alpha:1];
+        fillColor = [NSColor colorWithDeviceRed:0.243 green:0.502 blue:0.871 alpha:1];
     }
     else 
     {
         // Inactive
-        topLineColor = [NSColor colorWithDeviceRed:0.671 green:0.671 blue:0.671 alpha:1];
-        bottomLineColor = [NSColor colorWithDeviceRed:0.184 green:0.184 blue:0.184 alpha:1];
-        
-        gradientTop = [NSColor colorWithDeviceRed:0.612 green:0.612 blue:0.612 alpha:1];
-        gradientBottom = [NSColor colorWithDeviceRed:0.443 green:0.443 blue:0.447 alpha:1];
+        fillColor = [NSColor colorWithDeviceRed:0.612 green:0.612 blue:0.612 alpha:1];
     }
     
     // draw highlight for visible & selected rows
@@ -363,22 +329,8 @@ NSString *const OESidebarTogglesSystemNotification   = @"OESidebarTogglesSystemN
         if([aSelectedRowIndexes containsIndex:aRow])
         {
             NSRect rowFrame = [self rectOfRow:aRow];
-            NSRect innerTopLine = NSMakeRect(rowFrame.origin.x, rowFrame.origin.y+1, rowFrame.size.width, 1);
-            NSRect topLine = NSMakeRect(rowFrame.origin.x, rowFrame.origin.y, rowFrame.size.width, 1);
-            NSRect bottomLine = NSMakeRect(rowFrame.origin.x, rowFrame.origin.y+rowFrame.size.height-1, rowFrame.size.width, 1);
-            
-            [topLineColor setFill];
-            NSRectFill(innerTopLine);
-            
-            [bottomLineColor setFill];
-            NSRectFill(topLine);
-            NSRectFill(bottomLine);
-            
-            rowFrame.size.height -= 3;
-            rowFrame.origin.y += 2;
-            
-            NSGradient *selectionGradient = [[NSGradient alloc] initWithStartingColor:gradientTop endingColor:gradientBottom];
-            [selectionGradient drawInRect:rowFrame angle:90];
+            [fillColor set];
+            [NSBezierPath fillRect:rowFrame];
         }
     }
 }

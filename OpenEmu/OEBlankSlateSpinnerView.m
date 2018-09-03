@@ -25,9 +25,9 @@
  */
 
 #import "OEBlankSlateSpinnerView.h"
-#import <QuartzCore/QuartzCore.h>
+@import QuartzCore;
 
-@interface OEBlankSlateSpinnerView ()
+@interface OEBlankSlateSpinnerView () <CALayerDelegate>
 @property (strong) CALayer *dropShadowLayer;
 @property (strong) CALayer *spinnerLayer;
 @property (strong) CALayer *innerShadowLayer;
@@ -35,27 +35,28 @@
 
 @implementation OEBlankSlateSpinnerView
 
-- (BOOL)wantsLayer
+- (instancetype)initWithFrame:(NSRect)frame
+{
+    if (self = [super initWithFrame:frame]) {
+        [self setWantsLayer:YES];
+    }
+    return self;
+}
+
+- (BOOL)wantsUpdateLayer
 {
     return YES;
 }
 
-- (void)viewWillMoveToWindow:(NSWindow *)newWindow
+- (CALayer *)makeBackingLayer
 {
-    [self _setupLayers];
-}
-
-- (void)_setupLayers
-{
-    // Remove all layers
-    [[[[self layer] sublayers] copy] makeObjectsPerformSelector:@selector(removeFromSuperlayer)];
-
-    CALayer *rootLayer  = [self layer];
+    CALayer *rootLayer = [CALayer layer];
+    [rootLayer setDelegate:self];
     const CGRect bounds = [rootLayer bounds];
 
     CALayer *bgLayer = [CALayer layer];
     [bgLayer setContentsGravity:kCAAlignmentCenter];
-    [bgLayer setFrame:bounds];;
+    [bgLayer setFrame:bounds];
     [bgLayer setDelegate:self];
     [self setDropShadowLayer:bgLayer];
 
@@ -68,13 +69,15 @@
 
     CALayer *fgLayer = [CALayer layer];
     [fgLayer setContentsGravity:kCAAlignmentCenter];
-    [fgLayer setFrame:bounds];;
+    [fgLayer setFrame:bounds];
     [fgLayer setDelegate:self];
     [self setInnerShadowLayer:fgLayer];
 
     [rootLayer addSublayer:bgLayer];
     [rootLayer addSublayer:spinnerLayer];
     [rootLayer addSublayer:fgLayer];
+    
+    return rootLayer;
 }
 
 #pragma mark - Animation
